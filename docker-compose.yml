@@ -1,0 +1,36 @@
+services:
+  poketokenbar:
+    build: .
+    image: poketokenbar-web:latest
+    container_name: poketokenbar
+    restart: unless-stopped
+
+    ports:
+      - "${PTB_PORT:-8420}:8000"
+
+    # Your Claude Code logs are mode 600/700, so the container has to run as the
+    # user that owns them. Override in .env if your uid is not 1000 (`id -u`).
+    user: "${PTB_UID:-1000}:${PTB_GID:-1000}"
+
+    volumes:
+      # Read-only: the whole Claude config directory. This covers both the session
+      # logs and the OAuth credential, and mounting the directory (rather than the
+      # credential file directly) avoids Docker creating a stray directory when the
+      # file does not exist yet.
+      - ${PTB_CLAUDE_DIR:-${HOME}/.claude}:/host/claude:ro
+      # Read-write: your save, the PokéAPI cache and the sprite cache.
+      - ./data:/data
+
+    environment:
+      PTB_CLAUDE_ROOTS: /host/claude/projects
+      PTB_CREDENTIALS_FILE: /host/claude/.credentials.json
+      # Local dates decide which tokens count as "today", so set your own zone.
+      PTB_TZ: ${PTB_TZ:-UTC}
+      # How often the logs are re-scanned, in seconds.
+      PTB_POLL_INTERVAL: ${PTB_POLL_INTERVAL:-60}
+      # Set to 0 to skip the credential read and the api.anthropic.com call entirely.
+      PTB_LIMITS_ENABLED: ${PTB_LIMITS_ENABLED:-1}
+      PTB_LIMITS_INTERVAL: ${PTB_LIMITS_INTERVAL:-300}
+      # Supply an OAuth access token directly and the credentials file is never
+      # opened. Leave empty to read it from the mounted config instead.
+      PTB_OAUTH_TOKEN: ${PTB_OAUTH_TOKEN:-}

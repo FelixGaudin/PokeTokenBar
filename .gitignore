@@ -1,0 +1,11 @@
+.venv/
+data/
+research/
+node_modules/
+dist/
+__pycache__/
+*.pyc
+.env
+.env.test
+.env.*
+!.env.example
