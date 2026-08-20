@@ -145,3 +145,35 @@ def test_burn_tier_thresholds():
     assert tier(100_000) == "fast"
     assert tier(399_999) == "fast"
     assert tier(400_000) == "blazing"
+
+
+def test_snapshot_reports_a_missing_root_rather_than_a_confident_zero(tmp_path):
+    """An all-zero reading must be distinguishable from "nothing to read"."""
+    svc = UsageService([tmp_path / "does-not-exist"], TZ)
+    snap = svc.snapshot()
+    assert not snap.has_source
+    assert snap.missing_roots == [str(tmp_path / "does-not-exist")]
+    assert snap.present_roots == []
+    assert snap.total_files == 0
+    assert snap.today.total_tokens == 0
+
+
+def test_an_existing_but_empty_root_counts_as_a_source(tmp_path):
+    """A fresh Claude Code install legitimately has zero tokens today."""
+    root = tmp_path / "projects"
+    root.mkdir()
+    snap = UsageService([root], TZ).snapshot()
+    assert snap.has_source
+    assert snap.present_roots == [str(root)]
+    assert snap.total_files == 0
+
+
+def test_file_count_reflects_what_was_seen(tmp_path):
+    root = tmp_path / "projects" / "p"
+    root.mkdir(parents=True)
+    now = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+    for name in ("a.jsonl", "b.jsonl", "c.jsonl"):
+        _write_session(root, name, [_line(f"m{name}", f"r{name}", now)])
+    snap = UsageService([tmp_path / "projects"], TZ).snapshot()
+    assert snap.total_files == 3
+    assert snap.has_source

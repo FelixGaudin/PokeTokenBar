@@ -36,8 +36,6 @@ class Settings:
     limits_enabled: bool
     limits_interval: float
     timezone: ZoneInfo
-    # Supplying a token directly means the credentials file is never opened.
-    oauth_token: str | None = field(default=None)
     static_dir: Path | None = field(default=None)
 
     @property
@@ -79,7 +77,6 @@ def load_settings() -> Settings:
         limits_enabled=_bool(os.environ.get("PTB_LIMITS_ENABLED"), True),
         limits_interval=float(os.environ.get("PTB_LIMITS_INTERVAL", "300")),
         timezone=tz,
-        oauth_token=(os.environ.get("PTB_OAUTH_TOKEN") or "").strip() or None,
         static_dir=static_dir if static_dir and static_dir.exists() else None,
     )
 

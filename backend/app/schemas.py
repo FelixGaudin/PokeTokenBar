@@ -101,8 +101,8 @@ class LimitWindowView(BaseModel):
 class LimitsView(BaseModel):
     available: bool
     enabled: bool
-    # "env" when a token was supplied directly, "credentials-file" otherwise.
-    source: str | None = None
+    # True when these are the last good numbers and the latest fetch failed.
+    stale: bool = False
     plan: str | None = None
     windows: list[LimitWindowView] = Field(default_factory=list)
     error: str | None = None
@@ -195,6 +195,10 @@ class MetaView(BaseModel):
 
     providers: list[str] = Field(default_factory=list)
     log_roots: list[str] = Field(default_factory=list)
+    log_roots_present: list[str] = Field(default_factory=list)
+    log_files_found: int = 0
+    # Set when an all-zero reading has a cause worth telling the user about.
+    source_warning: str | None = None
     version: str = "1.0.0"
 
 

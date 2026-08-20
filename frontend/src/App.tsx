@@ -160,6 +160,10 @@ export default function App() {
         </div>
       )}
 
+      {state.meta.source_warning && (
+        <div className="banner banner--warn">{state.meta.source_warning}</div>
+      )}
+
       <main className="content">
         {tab === "Home" && <Home state={state} />}
         {tab === "Shop" && (

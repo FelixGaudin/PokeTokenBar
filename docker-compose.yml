@@ -17,6 +17,11 @@ services:
       # logs and the OAuth credential, and mounting the directory (rather than the
       # credential file directly) avoids Docker creating a stray directory when the
       # file does not exist yet.
+      #
+      # OPTIONAL. Without a real Claude config the app still runs — it just has
+      # nothing to count, and says so in the UI. To run without touching your Claude
+      # directory, point PTB_CLAUDE_DIR at any empty directory, e.g.
+      #   PTB_CLAUDE_DIR=/tmp/empty
       - ${PTB_CLAUDE_DIR:-${HOME}/.claude}:/host/claude:ro
       # Read-write: your save, the PokéAPI cache and the sprite cache.
       - ./data:/data
@@ -31,6 +36,3 @@ services:
       # Set to 0 to skip the credential read and the api.anthropic.com call entirely.
       PTB_LIMITS_ENABLED: ${PTB_LIMITS_ENABLED:-1}
       PTB_LIMITS_INTERVAL: ${PTB_LIMITS_INTERVAL:-300}
-      # Supply an OAuth access token directly and the credentials file is never
-      # opened. Leave empty to read it from the mounted config instead.
-      PTB_OAUTH_TOKEN: ${PTB_OAUTH_TOKEN:-}

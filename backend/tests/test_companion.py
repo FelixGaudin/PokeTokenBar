@@ -620,3 +620,27 @@ async def test_the_rng_seam_makes_hatches_reproducible(tmp_path):
         return (a.base_id, a.nature, a.is_shiny)
 
     assert await hatch_with(42) == await hatch_with(42)
+
+
+async def test_no_readable_source_does_not_set_a_baseline(tmp_path):
+    """Reporting an empty map must leave the ledger untouched.
+
+    With no log directory the runtime passes {} rather than a zero, so the install
+    baseline is never set from an observation that never happened.
+    """
+    svc = make_service(tmp_path, {1: three_stage_line()})
+    await svc.refresh(
+        today_by_provider={},
+        today_date="2026-08-19",
+        burn_tier="idle",
+        limit_warning=False,
+        has_usage_data=False,
+    )
+    assert not svc.state.install_baseline_set
+    assert svc.state.claimed_today_by_provider is None
+    assert svc.state.egg_usage == 0
+
+    # When the source appears, the first real observation seeds the baseline.
+    await feed(svc, 40_000_000)
+    assert svc.state.install_baseline_set
+    assert svc.state.used_since_install == 0, "history must not be credited"

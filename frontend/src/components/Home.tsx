@@ -225,6 +225,13 @@ function Limits({ state }: { state: StateView }) {
       title="Limits (official)"
       aside={limits.plan ? <span className="plan">{limits.plan}</span> : undefined}
     >
+      {limits.stale && limits.fetched_at && (
+        <p className="staleNote">
+          Showing the last successful reading from{" "}
+          {new Date(limits.fetched_at).toLocaleTimeString()} — the latest refresh failed
+          {limits.error ? `: ${limits.error}` : ""}.
+        </p>
+      )}
       <div className="limits">
         {limits.windows.map((w) => {
           const tone = limitTone(w.utilization);

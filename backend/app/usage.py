@@ -56,6 +56,17 @@ class UsageSnapshot:
     daily_history: list[tuple[str, int, float]]
     scanned_files: int
     generated_at: datetime
+    # Which configured roots actually exist on disk, and how many session files
+    # were seen across them. A zero here means "nothing to read", which is very
+    # different from "read successfully, and the total is zero".
+    present_roots: list[str] = field(default_factory=list)
+    missing_roots: list[str] = field(default_factory=list)
+    total_files: int = 0
+
+    @property
+    def has_source(self) -> bool:
+        """True when at least one log directory exists to be read."""
+        return bool(self.present_roots)
 
     @property
     def burn_per_minute(self) -> float:
@@ -112,10 +123,11 @@ class UsageService:
         self.tz = tz
         self._cache: dict[Path, tuple[float, int, list[Entry]]] = {}
 
-    def _entries(self, modified_since: float) -> tuple[list[Entry], int]:
+    def _entries(self, modified_since: float) -> tuple[list[Entry], int, int]:
         collected: list[Entry] = []
         live: set[Path] = set()
         scanned = 0
+        seen_files = 0
 
         for path in cc.jsonl_files(self.roots, modified_since=None):
             try:
@@ -123,6 +135,7 @@ class UsageService:
             except OSError:
                 continue
             live.add(path)
+            seen_files += 1
             # Files untouched since the window opened can only hold older entries,
             # but a cached parse is free — reuse it rather than dropping the file.
             cached = self._cache.get(path)
@@ -139,12 +152,14 @@ class UsageService:
         for stale in set(self._cache) - live:
             self._cache.pop(stale, None)
 
-        return cc.dedupe_keep_max(collected), scanned
+        return cc.dedupe_keep_max(collected), scanned, seen_files
 
     def snapshot(self, now: datetime | None = None) -> UsageSnapshot:
         now = now or datetime.now(timezone.utc)
         floor = enrichment_scan_start(now, self.tz)
-        entries, scanned = self._entries(floor.timestamp())
+        entries, scanned, seen_files = self._entries(floor.timestamp())
+        present = [str(r) for r in self.roots if r.is_dir()]
+        missing = [str(r) for r in self.roots if not r.is_dir()]
 
         local_today = now.astimezone(self.tz).date()
         today_key = local_today.strftime("%Y-%m-%d")
@@ -198,4 +213,7 @@ class UsageService:
             daily_history=history,
             scanned_files=scanned,
             generated_at=now,
+            present_roots=present,
+            missing_roots=missing,
+            total_files=seen_files,
         )

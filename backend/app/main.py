@@ -74,7 +74,6 @@ async def health() -> dict:
         "log_roots": roots,
         "credentials_mounted": SETTINGS.credentials_file.is_file(),
         "limits_enabled": SETTINGS.limits_enabled,
-        "limits_token_source": runtime.limits_provider.source,
         "last_refresh": runtime.last_refresh.isoformat() if runtime.last_refresh else None,
     }
 

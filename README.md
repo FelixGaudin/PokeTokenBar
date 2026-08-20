@@ -39,6 +39,18 @@ That's it. Your save, the PokéAPI cache and the sprite cache land in `./data/`.
 container has to run as the user that owns them. Check with `id -u` / `id -g` and set
 `PTB_UID` / `PTB_GID` in `.env` if they aren't 1000.
 
+**The Claude mount is optional.** Without it the app still starts and serves normally — it
+just has nothing to count, and says so in a banner rather than showing a silent zero. To run
+with no access to your Claude config at all, point `PTB_CLAUDE_DIR` at an empty directory:
+
+```bash
+mkdir -p /tmp/empty && PTB_CLAUDE_DIR=/tmp/empty docker compose up -d
+```
+
+You get the UI, the shop and the Pokédex; token tracking stays idle until a real log
+directory is mounted. The distinction is reported at `/api/state` under `meta`:
+`log_roots_present`, `log_files_found` and `source_warning`.
+
 Confirm it found your logs:
 
 ```bash
@@ -95,11 +107,6 @@ plus your plan label.
 Set `PTB_LIMITS_ENABLED=0` to skip the credential read and the outbound call entirely. The
 rolling 5-hour block is computed from local logs either way, so you keep a usable
 burn-rate view.
-
-Or set `PTB_OAUTH_TOKEN` and the credentials file is never opened — the token you supply
-is used directly. `/api/health` reports which source is active as `limits_token_source`.
-Reading the mounted file is the default because it picks up token refreshes automatically;
-a pasted token expires and has to be replaced by hand.
 
 Failures degrade quietly and never affect token accounting. A rejected or expired token
 surfaces as "run `/login`" in the UI, and a 429 backs off using the server's `Retry-After`.
@@ -181,7 +188,6 @@ Every value has a working default.
 | `PTB_POLL_INTERVAL` | `60` | Seconds between log re-scans |
 | `PTB_LIMITS_ENABLED` | `1` | Official limits on/off |
 | `PTB_LIMITS_INTERVAL` | `300` | Seconds between limit fetches |
-| `PTB_OAUTH_TOKEN` | — | Supply the token directly; skips reading the credentials file |
 | `PTB_CLAUDE_DIR` | `~/.claude` | If your Claude config lives elsewhere |
 | `PTB_CLAUDE_ROOTS` | — | Comma-separated log roots (set by compose) |
 | `PTB_DATA_DIR` | `/data` | Save + caches |

@@ -130,9 +130,14 @@ export function Settings({
           <dt>Log roots</dt>
           <dd>
             {state.meta.log_roots.map((root) => (
-              <code key={root}>{root}</code>
+              <code key={root}>
+                {root}
+                {state.meta.log_roots_present.includes(root) ? " ✓" : " — not found"}
+              </code>
             ))}
           </dd>
+          <dt>Session files seen</dt>
+          <dd>{state.meta.log_files_found}</dd>
           <dt>Providers</dt>
           <dd>{state.meta.providers.join(", ")}</dd>
           <dt>Timezone</dt>

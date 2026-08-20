@@ -304,6 +304,12 @@ code {
   border: 1px solid color-mix(in srgb, var(--crit) 40%, var(--line));
 }
 
+.banner--warn {
+  background: color-mix(in srgb, var(--warn) 14%, var(--panel));
+  border: 1px solid color-mix(in srgb, var(--warn) 38%, var(--line));
+  color: var(--text);
+}
+
 /* ---------------------------------------------------------------- sprites */
 
 .sprite {
@@ -707,6 +713,16 @@ code {
 }
 
 /* ---------------------------------------------------------------- limits */
+
+.staleNote {
+  margin: 0 0 14px;
+  padding: 8px 12px;
+  border-radius: var(--radius-sm);
+  background: color-mix(in srgb, var(--warn) 12%, var(--panel-2));
+  border: 1px solid color-mix(in srgb, var(--warn) 30%, var(--line));
+  font-size: 12.5px;
+  color: var(--text-dim);
+}
 
 .limits {
   display: flex;

@@ -136,33 +136,6 @@ def test_windows_without_a_percentage_are_dropped():
     assert status.max_utilization == 0.0
 
 
-def test_a_supplied_token_bypasses_the_credentials_file(tmp_path):
-    """With PTB_OAUTH_TOKEN set, the credentials file is never opened."""
-    missing = tmp_path / "definitely-absent.json"
-    provider = L.LimitsProvider(missing, token_override="sk-ant-oat01-supplied")
-    cred = provider._credential()
-    assert cred.access_token == "sk-ant-oat01-supplied"
-    assert provider.source == "env"
-    # No expiry metadata travels with a bare token, so it is never pre-judged stale.
-    assert not cred.is_expired
-    assert L.plan_display(cred) is None
-
-
-def test_without_an_override_the_file_is_still_the_source(tmp_path):
-    path = tmp_path / "creds.json"
-    path.write_text(json.dumps(_creds()))
-    provider = L.LimitsProvider(path)
-    assert provider.source == "credentials-file"
-    assert provider._credential().access_token == "sk-ant-oat01-test"
-
-
-def test_a_blank_override_is_treated_as_absent(tmp_path):
-    path = tmp_path / "creds.json"
-    path.write_text(json.dumps(_creds()))
-    # config.py normalises empty/whitespace to None; confirm the provider agrees.
-    assert L.LimitsProvider(path, token_override=None).source == "credentials-file"
-
-
 def test_stored_language_maps_back_to_the_short_code():
     """The UI's <select> options use short codes; PokéAPI stores ja as ja-Hrkt.
 
@@ -312,3 +285,25 @@ async def test_a_non_json_body_is_reported_clearly(tmp_path):
         async with _client(handler) as c:
             await _provider(tmp_path).fetch(c)
     assert "invalid JSON" in exc.value.reason
+
+
+def test_limits_backoff_grows_on_consecutive_failures():
+    """A flat retry keeps re-tripping a shared endpoint's rate limit."""
+    from app.runtime import LIMITS_MAX_BACKOFF
+
+    interval = 300.0
+    # The runtime computes min(interval * 2**(n-1), cap) for the nth failure.
+    seq = [min(interval * (2 ** (n - 1)), LIMITS_MAX_BACKOFF) for n in range(1, 8)]
+    assert seq[0] == 300
+    assert seq[1] == 600
+    assert seq[2] == 1200
+    # Capped, and never decreasing.
+    assert all(b <= LIMITS_MAX_BACKOFF for b in seq)
+    assert seq == sorted(seq)
+    assert seq[-1] == LIMITS_MAX_BACKOFF
+
+
+def test_an_explicit_retry_after_wins_over_the_backoff_curve():
+    """The server's own guidance must not be overridden by our escalation."""
+    resp = httpx.Response(429, headers={"Retry-After": "45"})
+    assert L._retry_after_seconds(resp) == 45

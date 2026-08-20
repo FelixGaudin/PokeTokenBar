@@ -109,7 +109,7 @@ export interface LimitWindowView {
 export interface LimitsView {
   available: boolean;
   enabled: boolean;
-  source: string | null;
+  stale: boolean;
   plan: string | null;
   windows: LimitWindowView[];
   error: string | null;
@@ -198,6 +198,9 @@ export interface MetaView {
   language: string;
   providers: string[];
   log_roots: string[];
+  log_roots_present: string[];
+  log_files_found: number;
+  source_warning: string | null;
   version: string;
 }
 

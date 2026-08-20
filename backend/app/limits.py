@@ -181,24 +181,11 @@ def parse_status(payload: dict, cred: Credential) -> LimitStatus:
 
 
 class LimitsProvider:
-    def __init__(self, credentials_file: Path, token_override: str | None = None) -> None:
+    def __init__(self, credentials_file: Path) -> None:
         self.credentials_file = credentials_file
-        self.token_override = token_override
-
-    @property
-    def source(self) -> str:
-        return "env" if self.token_override else "credentials-file"
-
-    def _credential(self) -> Credential:
-        if self.token_override:
-            # A directly supplied token carries no expiry or plan metadata, so the
-            # expiry check is skipped and the plan label is simply absent. The API
-            # rejecting it is the only expiry signal available.
-            return Credential(self.token_override, None, None, None)
-        return read_credential(self.credentials_file)
 
     async def fetch(self, client: httpx.AsyncClient) -> LimitStatus:
-        cred = self._credential()
+        cred = read_credential(self.credentials_file)
         if cred.is_expired:
             raise LimitsUnavailable("OAuth token expired — run /login", auth_expired=True)
 

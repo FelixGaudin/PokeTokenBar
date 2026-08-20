@@ -52,6 +52,9 @@ log = logging.getLogger(__name__)
 # A window at or above this percentage makes the Pokémon look worn out.
 CRIT_THRESHOLD = 95.0
 
+# Ceiling on the exponential limits backoff, so it always recovers eventually.
+LIMITS_MAX_BACKOFF = 1800.0
+
 ITEM_LABELS = {
     ItemKind.RARE_CANDY: "Rare Candy",
     ItemKind.MINT: "Mint",
@@ -81,13 +84,15 @@ class AppRuntime:
         self.sprites = SpriteStore(settings.sprite_dir)
         self.companion = CompanionService(self.store, self.poke)
         self.usage = UsageService(settings.claude_roots, settings.timezone)
-        self.limits_provider = LimitsProvider(settings.credentials_file, settings.oauth_token)
+        self.limits_provider = LimitsProvider(settings.credentials_file)
 
         self.snapshot: UsageSnapshot | None = None
         self.limits: LimitStatus | None = None
         self.limits_error: str | None = None
         self.limits_auth_expired = False
         self._limits_next_attempt = 0.0
+        # Consecutive failures, for backing off politely on a shared endpoint.
+        self._limits_failures = 0
         self.last_refresh: datetime | None = None
         self._refresh_lock = asyncio.Lock()
         self._task: asyncio.Task | None = None
@@ -140,12 +145,19 @@ class AppRuntime:
             limit_warning = (
                 self.limits is not None and self.limits.max_utilization >= CRIT_THRESHOLD
             )
+            # With no readable log directory there is nothing to observe, so report an
+            # empty map rather than a confident zero. Claiming a zero observation would
+            # set the install baseline from data that was never read, and later credit
+            # a whole day at once when the mount finally appears.
+            has_source = snapshot.has_source
             await self.companion.refresh(
-                today_by_provider={PROVIDER_ID: snapshot.today.total_tokens},
+                today_by_provider=(
+                    {PROVIDER_ID: snapshot.today.total_tokens} if has_source else {}
+                ),
                 today_date=snapshot.today_date,
                 burn_tier=snapshot.burn_tier,
                 limit_warning=limit_warning,
-                has_usage_data=True,
+                has_usage_data=has_source,
             )
 
             if self.limits is not None:
@@ -171,13 +183,25 @@ class AppRuntime:
             self.limits_error = None
             self.limits_auth_expired = False
             self._limits_next_attempt = 0.0
+            self._limits_failures = 0
         except LimitsUnavailable as exc:
             self.limits_error = exc.reason
             self.limits_auth_expired = exc.auth_expired
-            # Back off so a 429 or an expired login is not hammered every tick.
-            backoff = exc.retry_after or self.settings.limits_interval
+            self._limits_failures += 1
+            # A flat retry against a shared endpoint keeps re-tripping its rate limit,
+            # especially when more than one instance uses the same token. Double the
+            # wait on each consecutive failure, capped, and always honour Retry-After.
+            backoff = exc.retry_after or min(
+                self.settings.limits_interval * (2 ** (self._limits_failures - 1)),
+                LIMITS_MAX_BACKOFF,
+            )
             self._limits_next_attempt = time.time() + backoff
-            log.info("limits unavailable: %s (retrying in %.0fs)", exc.reason, backoff)
+            log.info(
+                "limits unavailable: %s (attempt %d, retrying in %.0fs)",
+                exc.reason,
+                self._limits_failures,
+                backoff,
+            )
 
     # -- view building -----------------------------------------------------
 
@@ -201,8 +225,30 @@ class AppRuntime:
                 providers=[PROVIDER_ID],
                 log_roots=[str(p) for p in self.settings.claude_roots],
                 language=short_language(self.store.state.language),
+                log_roots_present=(self.snapshot.present_roots if self.snapshot else []),
+                log_files_found=(self.snapshot.total_files if self.snapshot else 0),
+                source_warning=self._source_warning(),
             ),
         )
+
+    def _source_warning(self) -> str | None:
+        """Explain an all-zero reading, so it is never mistaken for "no usage today"."""
+        snapshot = self.snapshot
+        if snapshot is None:
+            return "Waiting for the first scan."
+        if not snapshot.has_source:
+            roots = ", ".join(snapshot.missing_roots) or "(none configured)"
+            return (
+                f"No log directory found at {roots}. Mount your Claude config "
+                f"read-only, or set PTB_CLAUDE_ROOTS. Token tracking is idle until then."
+            )
+        if snapshot.total_files == 0:
+            roots = ", ".join(snapshot.present_roots)
+            return (
+                f"{roots} exists but holds no session files yet. Run Claude Code once "
+                f"and the numbers will start moving."
+            )
+        return None
 
     def _companion_view(self) -> CompanionView:
         state = self.store.state
@@ -329,14 +375,15 @@ class AppRuntime:
             return LimitsView(
                 available=False,
                 enabled=True,
-                source=self.limits_provider.source,
                 error=self.limits_error,
                 auth_expired=self.limits_auth_expired,
             )
         return LimitsView(
             available=True,
             enabled=True,
-            source=self.limits_provider.source,
+            # Retaining the last good reading is deliberate, but presenting it as
+            # current is not — flag it so the UI can say how old it is.
+            stale=self.limits_error is not None,
             plan=self.limits.plan,
             windows=[
                 LimitWindowView(
