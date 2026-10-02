@@ -18,7 +18,14 @@ import httpx
 log = logging.getLogger(__name__)
 
 USAGE_URL = "https://api.anthropic.com/api/oauth/usage"
+PROFILE_URL = "https://api.anthropic.com/api/oauth/profile"
 OAUTH_BETA = "oauth-2025-04-20"
+
+FIVE_HOURS = 5 * 3600
+SEVEN_DAYS = 7 * 24 * 3600
+# Identity lookups are cached per token; failures are not, so a switched account
+# never shows the previous one's label.
+PROFILE_CACHE_MAX = 8
 
 
 class LimitsUnavailable(Exception):
@@ -52,12 +59,27 @@ class LimitWindow:
     utilization: float | None
     resets_at: str | None = None
 
+    @property
+    def span_seconds(self) -> int | None:
+        """How long this window lasts, for the pace marker. None when unknown."""
+        if self.kind == "session":
+            return FIVE_HOURS
+        if self.kind in ("weekly", "weekly_all", "weekly_scoped"):
+            return SEVEN_DAYS
+        return None
+
 
 @dataclass
 class LimitStatus:
     windows: list[LimitWindow] = field(default_factory=list)
     plan: str | None = None
     fetched_at: float = 0.0
+    account_email: str | None = None
+    account_org: str | None = None
+
+    @property
+    def account(self) -> str | None:
+        return account_display(self.account_email, self.account_org)
 
     @property
     def max_utilization(self) -> float:
@@ -104,6 +126,43 @@ def read_credential(path: Path) -> Credential:
         subscription_type=oauth.get("subscriptionType"),
         rate_limit_tier=oauth.get("rateLimitTier"),
     )
+
+
+def account_display(email: str | None, org: str | None) -> str | None:
+    """Personal plans get a generated "<email>'s Organization", which adds nothing."""
+    if not email:
+        return None
+    if not org or email in org:
+        return email
+    return f"{email} · {org}"
+
+
+def parse_profile(payload: object) -> tuple[str, str | None] | None:
+    if not isinstance(payload, dict):
+        return None
+    account = payload.get("account")
+    email = account.get("email") if isinstance(account, dict) else None
+    if not isinstance(email, str) or not email:
+        return None
+    org = payload.get("organization")
+    name = org.get("name") if isinstance(org, dict) else None
+    return email, (name if isinstance(name, str) and name else None)
+
+
+def saved_identity(claude_json: Path) -> tuple[str, str | None] | None:
+    """The login Claude Code saved in `.claude.json`, used when the profile call fails."""
+    try:
+        raw = json.loads(claude_json.read_text())
+    except (OSError, ValueError):
+        return None
+    account = raw.get("oauthAccount") if isinstance(raw, dict) else None
+    if not isinstance(account, dict):
+        return None
+    email = account.get("emailAddress")
+    if not isinstance(email, str) or not email:
+        return None
+    org = account.get("organizationName")
+    return email, (org if isinstance(org, str) and org else None)
 
 
 def _tier_multiplier(tier: str | None) -> str | None:
@@ -181,11 +240,56 @@ def parse_status(payload: dict, cred: Credential) -> LimitStatus:
 
 
 class LimitsProvider:
-    def __init__(self, credentials_file: Path) -> None:
+    def __init__(self, credentials_file: Path, claude_json: Path | None = None) -> None:
         self.credentials_file = credentials_file
+        self.claude_json = claude_json
+        self._last_good: Credential | None = None
+        self._profiles: dict[str, tuple[str, str | None]] = {}
+
+    def _credential(self) -> Credential:
+        """Re-read the file every time, so a /login to another account is picked up.
+
+        Only when the file vanished or was logged out does the last good token stand
+        in, until it expires.
+        """
+        try:
+            cred = read_credential(self.credentials_file)
+        except LimitsUnavailable:
+            if self._last_good is not None and not self._last_good.is_expired:
+                return self._last_good
+            raise
+        if not cred.is_expired:
+            self._last_good = cred
+        elif self._last_good is not None and not self._last_good.is_expired:
+            return self._last_good
+        return cred
+
+    async def _identity(
+        self, client: httpx.AsyncClient, token: str
+    ) -> tuple[str, str | None] | None:
+        cached = self._profiles.get(token)
+        if cached is not None:
+            return cached
+        try:
+            resp = await client.get(
+                PROFILE_URL,
+                headers={"Authorization": f"Bearer {token}", "anthropic-beta": OAUTH_BETA},
+                timeout=15.0,
+            )
+            identity = parse_profile(resp.json()) if resp.status_code == 200 else None
+        except (httpx.HTTPError, ValueError):
+            identity = None
+        if identity is not None:
+            if len(self._profiles) >= PROFILE_CACHE_MAX:
+                self._profiles.clear()
+            self._profiles[token] = identity
+        return identity
+
+    def fallback_identity(self) -> tuple[str, str | None] | None:
+        return saved_identity(self.claude_json) if self.claude_json else None
 
     async def fetch(self, client: httpx.AsyncClient) -> LimitStatus:
-        cred = read_credential(self.credentials_file)
+        cred = self._credential()
         if cred.is_expired:
             raise LimitsUnavailable("OAuth token expired — run /login", auth_expired=True)
 
@@ -220,7 +324,12 @@ class LimitsProvider:
         if not isinstance(payload, dict):
             raise LimitsUnavailable("usage endpoint returned an unexpected shape")
 
-        return parse_status(payload, cred)
+        status = parse_status(payload, cred)
+        # Best effort: a failed lookup only drops the label.
+        identity = await self._identity(client, cred.access_token) or self.fallback_identity()
+        if identity is not None:
+            status.account_email, status.account_org = identity
+        return status
 
 
 def _retry_after_seconds(resp: httpx.Response) -> float | None:

@@ -9,7 +9,7 @@ from pathlib import Path
 
 log = logging.getLogger(__name__)
 
-SIZES = (48, 96, 128, 192)
+SIZES = (48, 96, 128, 192, 256, 320, 384)
 
 DEFAULTS: dict[str, object] = {
     "x": 80,

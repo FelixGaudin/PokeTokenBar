@@ -1,0 +1,574 @@
+/* Home tab: pace tiers, month trend, limits layout, usage recap. */
+
+:root {
+  --pace-blue: #0a84ff;
+  --pace-teal: #40c8e0;
+  --pace-green: var(--ok);
+  --pace-yellow: #ffd60a;
+  --pace-orange: var(--warn);
+  --pace-red: var(--crit);
+}
+
+@media (prefers-color-scheme: light) {
+  :root {
+    --pace-blue: #007aff;
+    --pace-teal: #30b0c7;
+    --pace-yellow: #ffcc00;
+  }
+}
+
+/* ---------------------------------------------------------------- companion */
+
+.companion__hint.home__delayed {
+  color: var(--warn);
+}
+
+.home__boost {
+  display: inline-block;
+  margin-left: 8px;
+  padding: 1px 7px;
+  border-radius: 999px;
+  font-size: 10px;
+  font-weight: 700;
+  line-height: 1.5;
+  vertical-align: 1px;
+  color: var(--warn);
+  background: color-mix(in srgb, var(--warn) 15%, transparent);
+}
+
+.home__level {
+  font-family: var(--mono);
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--text-dim);
+}
+
+/* ---------------------------------------------------------------- meter tones */
+
+.meter--wayUnder .meter__fill {
+  background: var(--pace-blue);
+}
+.meter--under .meter__fill {
+  background: var(--pace-teal);
+}
+.meter--onPace .meter__fill {
+  background: var(--pace-green);
+}
+.meter--slightlyOver .meter__fill {
+  background: var(--pace-yellow);
+}
+.meter--over .meter__fill {
+  background: var(--pace-orange);
+}
+.meter--wayOver .meter__fill {
+  background: var(--pace-red);
+}
+
+/* ---------------------------------------------------------------- recap entry */
+
+.rangeRow__item.home__monthItem {
+  position: relative;
+  padding-right: 44px;
+}
+
+.home__recapBtn {
+  position: absolute;
+  top: 50%;
+  right: 8px;
+  transform: translateY(-50%);
+  display: grid;
+  place-items: center;
+  width: 30px;
+  height: 30px;
+  padding: 0;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: var(--panel);
+  color: var(--text-dim);
+  cursor: pointer;
+  transition: color 0.15s, border-color 0.15s;
+}
+
+.home__recapBtn:hover {
+  color: var(--accent);
+  border-color: var(--text-faint);
+}
+
+/* ---------------------------------------------------------------- month trend */
+
+.trend {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  margin-top: 14px;
+  padding-top: 4px;
+}
+
+.trend__caption {
+  display: flex;
+  align-items: baseline;
+  flex-wrap: wrap;
+  gap: 2px 8px;
+  font-size: 12px;
+}
+
+.trend__title {
+  color: var(--text-faint);
+}
+
+.trend__readout {
+  font-weight: 550;
+  color: var(--text-dim);
+  font-variant-numeric: tabular-nums;
+}
+
+.trend__peak {
+  margin-left: auto;
+  font-size: 11px;
+  color: var(--text-faint);
+}
+
+.trend__peak strong {
+  font-weight: 650;
+  color: var(--text-dim);
+  font-variant-numeric: tabular-nums;
+}
+
+.trend__grid {
+  display: grid;
+  column-gap: 1.5px;
+}
+
+.trend__col {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  min-width: 0;
+  outline: none;
+}
+
+.trend__track {
+  display: flex;
+  align-items: flex-end;
+  height: 26px;
+}
+
+.trend__bar {
+  display: block;
+  width: 100%;
+  border-radius: 1px;
+  background: var(--text-dim);
+  opacity: 0.45;
+}
+
+.trend__bar--zero {
+  opacity: 0.18;
+}
+
+.trend__bar--today {
+  background: var(--accent);
+  opacity: 1;
+}
+
+.trend__weekend {
+  display: block;
+  height: 1.5px;
+}
+
+.trend__weekend.is-weekend {
+  background: color-mix(in srgb, var(--text-dim) 50%, transparent);
+}
+
+.trend__axis {
+  display: flex;
+  justify-content: center;
+  height: 14px;
+  overflow: visible;
+  white-space: nowrap;
+  font-size: 10px;
+  line-height: 14px;
+  color: var(--text-faint);
+  font-variant-numeric: tabular-nums;
+}
+
+.trend__axis--today {
+  color: var(--accent);
+  font-weight: 600;
+}
+
+/* ---------------------------------------------------------------- limits */
+
+.home__accountTabs {
+  margin-bottom: 14px;
+}
+
+.home__identity {
+  display: flex;
+  flex-direction: column;
+  margin: -6px 0 14px;
+  font-size: 12px;
+  color: var(--text-faint);
+  overflow-wrap: anywhere;
+}
+
+.home__limitHead {
+  flex-wrap: wrap;
+  row-gap: 2px;
+}
+
+.home__limitHead .limits__name {
+  margin-right: auto;
+}
+
+.home__reset {
+  font-size: 12px;
+  color: var(--text-faint);
+  font-variant-numeric: tabular-nums;
+}
+
+.limits__head .home__pct {
+  margin-left: 0;
+  font-family: var(--mono);
+  font-size: 14px;
+  white-space: nowrap;
+}
+
+.limits__head .home__pct--ok,
+.limits__head .home__pct--onPace {
+  color: var(--pace-green);
+}
+.limits__head .home__pct--warn,
+.limits__head .home__pct--over {
+  color: var(--pace-orange);
+}
+.limits__head .home__pct--crit,
+.limits__head .home__pct--wayOver {
+  color: var(--pace-red);
+}
+.limits__head .home__pct--wayUnder {
+  color: var(--pace-blue);
+}
+.limits__head .home__pct--under {
+  color: var(--pace-teal);
+}
+/* Yellow text is unreadable on light backgrounds; the bar keeps the yellow. */
+.limits__head .home__pct--slightlyOver {
+  color: var(--text);
+}
+
+/* ---------------------------------------------------------------- recap */
+
+.recap__top {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 10px;
+  justify-content: space-between;
+}
+
+.recap__nav {
+  display: flex;
+  justify-content: space-between;
+  margin: 12px 0 10px;
+}
+
+.recap__navBtn {
+  padding: 2px 4px;
+  border: 0;
+  background: transparent;
+  color: var(--accent);
+  font-size: 12px;
+  cursor: pointer;
+}
+
+.recap__navBtn:disabled {
+  color: var(--text-faint);
+  opacity: 0.6;
+  cursor: not-allowed;
+}
+
+.recap__captions {
+  margin-top: 10px;
+  font-size: 12.5px;
+  color: var(--text-dim);
+}
+
+.recap__captions p {
+  margin: 0 0 2px;
+}
+
+/* The Pokédex device keeps fixed colours in both themes. */
+.dexCard {
+  --lcd: rgb(130, 250, 158);
+  --amber: rgb(255, 186, 71);
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  min-height: 226px;
+  padding: 12px 12px 12px 17px;
+  border-radius: 10px;
+  background: linear-gradient(180deg, rgb(214, 54, 46), rgb(168, 31, 28));
+  color: #fff;
+  font-family: var(--mono);
+  overflow: hidden;
+}
+
+.dexCard::before {
+  content: "";
+  position: absolute;
+  inset: 0 auto 0 0;
+  width: 5px;
+  background: rgba(0, 0, 0, 0.14);
+}
+
+.dexCard__head {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  min-width: 0;
+}
+
+.dexCard__lens {
+  flex-shrink: 0;
+  width: 16px;
+  height: 16px;
+  margin-right: 3px;
+  border-radius: 50%;
+  border: 2px solid rgba(255, 255, 255, 0.85);
+  background: radial-gradient(circle at 35% 35%, #9fd4ff, #1f6fd6 60%, #0d3f86);
+}
+
+.dexCard__dot {
+  flex-shrink: 0;
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+}
+.dexCard__dot--red {
+  background: rgb(242, 89, 89);
+}
+.dexCard__dot--yellow {
+  background: rgb(250, 209, 89);
+}
+.dexCard__dot--green {
+  background: rgb(115, 224, 128);
+}
+
+.dexCard__period {
+  margin-left: auto;
+  min-width: 0;
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: 1.2px;
+  color: rgba(255, 255, 255, 0.95);
+  text-align: right;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.dexCard__screen {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  flex: 1;
+  padding: 8px 10px;
+  border-radius: 6px;
+  border: 2px solid rgba(0, 0, 0, 0.35);
+  background: rgb(13, 18, 20);
+  color: var(--lcd);
+}
+
+.dexCard__totalRow {
+  display: flex;
+  align-items: baseline;
+  gap: 5px;
+}
+
+.dexCard__total {
+  font-size: 24px;
+  font-weight: 700;
+  line-height: 1;
+}
+
+.dexCard__unit {
+  font-size: 7px;
+  opacity: 0.5;
+}
+
+.dexCard__delta {
+  margin-left: auto;
+  align-self: center;
+  padding: 1px 4px;
+  border: 1px solid currentColor;
+  border-radius: 2px;
+  font-size: 9px;
+  font-weight: 700;
+}
+
+.dexCard__delta--up {
+  color: var(--lcd);
+}
+.dexCard__delta--down {
+  color: var(--amber);
+}
+
+.dexCard__meters {
+  display: flex;
+  padding-bottom: 12px;
+}
+.dexCard__meters--week {
+  gap: 6px;
+}
+.dexCard__meters--month {
+  gap: 1.5px;
+}
+.dexCard__meters--year {
+  gap: 4px;
+}
+
+.dexMeter {
+  position: relative;
+  flex: 1;
+  min-width: 0;
+}
+
+.dexMeter__stack {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.dexMeter__seg {
+  height: 4px;
+  border-radius: 1px;
+  background: color-mix(in srgb, var(--lcd) 3.5%, transparent);
+}
+
+.dexMeter--data .dexMeter__seg {
+  background: color-mix(in srgb, var(--lcd) 9%, transparent);
+}
+
+.dexMeter .dexMeter__seg.is-lit {
+  background: color-mix(in srgb, var(--lcd) 55%, transparent);
+}
+
+.dexMeter--current .dexMeter__seg.is-lit {
+  background: var(--lcd);
+}
+
+/* Zero-width so labels never widen their column. */
+.dexMeter__label {
+  position: absolute;
+  top: calc(100% + 2px);
+  left: 50%;
+  width: 0;
+  display: flex;
+  justify-content: center;
+  font-size: 7px;
+  line-height: 1;
+  white-space: nowrap;
+  color: color-mix(in srgb, var(--lcd) 45%, transparent);
+}
+
+.dexMeter--current .dexMeter__label {
+  font-weight: 700;
+  color: var(--lcd);
+}
+
+.dexCard__readouts {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 4px 10px;
+  margin: 0;
+}
+
+.dexCard__readouts div {
+  display: flex;
+  justify-content: space-between;
+  align-items: baseline;
+  gap: 6px;
+  min-width: 0;
+}
+
+.dexCard__readouts dt {
+  font-size: 7px;
+  opacity: 0.5;
+  white-space: nowrap;
+}
+
+.dexCard__readouts dd {
+  margin: 0;
+  font-size: 9.5px;
+  font-weight: 700;
+  white-space: nowrap;
+}
+
+.dexCard__strip {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+}
+
+.dexCard__egg {
+  font-size: 14px;
+  line-height: 18px;
+}
+
+.dexCard__divider {
+  flex-shrink: 0;
+  width: 1px;
+  height: 16px;
+  background: rgba(255, 255, 255, 0.35);
+}
+
+.dexCard__grads {
+  display: flex;
+  gap: 4px;
+  min-width: 0;
+  overflow: hidden;
+}
+
+.dexCard__grad {
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+  min-width: 0;
+  padding: 1px 5px 1px 2px;
+  border-radius: 4px;
+  background: rgba(0, 0, 0, 0.22);
+}
+
+.dexCard__gradArt {
+  position: relative;
+  flex-shrink: 0;
+}
+
+.dexCard__shiny {
+  position: absolute;
+  top: -4px;
+  right: -4px;
+  font-size: 7px;
+}
+
+.dexCard__gradName {
+  min-width: 0;
+  font-size: 8px;
+  font-weight: 600;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.dexCard__none {
+  font-size: 8px;
+  color: rgba(255, 255, 255, 0.8);
+}
+
+.dexCard .sprite--missing {
+  font-size: 10px;
+  background: rgba(0, 0, 0, 0.2);
+  color: rgba(255, 255, 255, 0.7);
+}

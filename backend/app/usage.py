@@ -2,13 +2,13 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 from zoneinfo import ZoneInfo
 
 from .readers import claude_code as cc
-from .readers.claude_code import Bucket, Entry
+from .readers.claude_code import Bucket, CostCoverage, Entry
 
 # The rolling window shared by the burn-rate block and the enrichment scan floor.
 BLOCK_WINDOW = timedelta(hours=5)
@@ -21,12 +21,14 @@ class BlockUsage:
     total_tokens: int
     cost: float
     tokens_per_minute: float
+    coverage: CostCoverage = field(default_factory=CostCoverage)
 
 
 @dataclass
 class PeriodUsage:
     total_tokens: int
     cost: float
+    coverage: CostCoverage = field(default_factory=CostCoverage)
     input: int = 0
     output: int = 0
     cache_write: int = 0
@@ -38,6 +40,7 @@ class PeriodUsage:
         return PeriodUsage(
             total_tokens=bucket.total,
             cost=bucket.cost,
+            coverage=bucket.coverage,
             input=bucket.input,
             output=bucket.output,
             cache_write=bucket.cache_write,
@@ -47,13 +50,22 @@ class PeriodUsage:
 
 
 @dataclass
+class DayUsage:
+    date: str
+    total_tokens: int
+    cost: float
+    coverage: CostCoverage = field(default_factory=CostCoverage)
+
+
+@dataclass
 class UsageSnapshot:
     today_date: str
     today: PeriodUsage
     week: PeriodUsage
     month: PeriodUsage
     block: BlockUsage | None
-    daily_history: list[tuple[str, int, float]]
+    # Every day from the 1st through today, empty days included, summing to `month`.
+    month_daily: list[DayUsage]
     scanned_files: int
     generated_at: datetime
     # Which configured roots actually exist on disk, and how many session files
@@ -62,6 +74,11 @@ class UsageSnapshot:
     present_roots: list[str] = field(default_factory=list)
     missing_roots: list[str] = field(default_factory=list)
     total_files: int = 0
+    # Today's tokens per present log root.
+    today_by_root: dict[str, int] = field(default_factory=dict)
+    # (day, tokens) for every day the scan fully covers, which reaches back past
+    # the 1st early in a month — so the end of last month still reaches the ledger.
+    recent_daily: list[tuple[str, int]] = field(default_factory=list)
 
     @property
     def has_source(self) -> bool:
@@ -123,13 +140,23 @@ class UsageService:
         self.tz = tz
         self._cache: dict[Path, tuple[float, int, list[Entry]]] = {}
 
+    def _files(self):
+        """Every session file with the root it belongs to; a file is listed once."""
+        seen: set[Path] = set()
+        for root in self.roots:
+            for path in cc.jsonl_files([root], modified_since=None):
+                resolved = path.resolve()
+                if resolved not in seen:
+                    seen.add(resolved)
+                    yield path, str(root)
+
     def _entries(self, modified_since: float) -> tuple[list[Entry], int, int]:
         collected: list[Entry] = []
         live: set[Path] = set()
         scanned = 0
         seen_files = 0
 
-        for path in cc.jsonl_files(self.roots, modified_since=None):
+        for path, root in self._files():
             try:
                 st = path.stat()
             except OSError:
@@ -144,7 +171,7 @@ class UsageService:
                 continue
             if st.st_mtime < modified_since and cached is None:
                 continue
-            entries = cc.parse_file(path, self.tz)
+            entries = [replace(e, root=root) for e in cc.parse_file(path, self.tz)]
             self._cache[path] = (st.st_mtime, st.st_size, entries)
             collected.extend(entries)
             scanned += 1
@@ -167,7 +194,21 @@ class UsageService:
         month_key = start_of_month(local_today).strftime("%Y-%m-%d")
 
         today_b, week_b, month_b = Bucket(), Bucket(), Bucket()
-        per_day: dict[str, Bucket] = {}
+        # Calendar stepping, not +86400s, so a DST change never skips a day.
+        month_days = [
+            (start_of_month(local_today) + timedelta(days=n)).strftime("%Y-%m-%d")
+            for n in range(local_today.day)
+        ]
+        per_day: dict[str, Bucket] = {d: Bucket() for d in month_days}
+        today_by_root: dict[str, int] = {r: 0 for r in present}
+        first_full_day = (floor.astimezone(self.tz) + timedelta(days=1)).date()
+        if floor.astimezone(self.tz).time() == datetime.min.time():
+            first_full_day = floor.astimezone(self.tz).date()
+        recent_days = [
+            (first_full_day + timedelta(days=n)).strftime("%Y-%m-%d")
+            for n in range((local_today - first_full_day).days + 1)
+        ]
+        recent_totals: dict[str, int] = dict.fromkeys(recent_days, 0)
         window_start = now - BLOCK_WINDOW
         recent: list[Entry] = []
 
@@ -175,11 +216,15 @@ class UsageService:
             day = e.local_day
             if day == today_key:
                 today_b.add(e)
+                today_by_root[e.root] = today_by_root.get(e.root, 0) + e.total
             if week_key <= day <= today_key:
                 week_b.add(e)
+            if day in recent_totals:
+                recent_totals[day] += e.total
             if month_key <= day <= today_key:
                 month_b.add(e)
-            per_day.setdefault(day, Bucket()).add(e)
+                # Last month's turns in a file that crossed the boundary stay out.
+                per_day[day].add(e)
             if e.date >= window_start:
                 recent.append(e)
 
@@ -197,12 +242,14 @@ class UsageService:
                 total_tokens=block_b.total,
                 cost=block_b.cost,
                 tokens_per_minute=block_b.total / minutes,
+                coverage=block_b.coverage,
             )
 
-        history = sorted(
-            ((day, b.total, b.cost) for day, b in per_day.items()),
-            key=lambda row: row[0],
-        )[-30:]
+        month_daily = [
+            DayUsage(date=d, total_tokens=per_day[d].total, cost=per_day[d].cost,
+                     coverage=per_day[d].coverage)
+            for d in month_days
+        ]
 
         return UsageSnapshot(
             today_date=today_key,
@@ -210,7 +257,9 @@ class UsageService:
             week=PeriodUsage.of(week_b),
             month=PeriodUsage.of(month_b),
             block=block,
-            daily_history=history,
+            month_daily=month_daily,
+            today_by_root=today_by_root,
+            recent_daily=list(recent_totals.items()),
             scanned_files=scanned,
             generated_at=now,
             present_roots=present,

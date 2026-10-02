@@ -17,6 +17,7 @@ from typing import Any
 import httpx
 
 from .balance import ANIMATED_SPECIES_MAX, DITTO_SPECIES_ID, Rarity, has_animated_sprite
+from .profile import Ability, LearnMethod, MoveInfo, PokemonDetails
 
 log = logging.getLogger(__name__)
 
@@ -40,6 +41,9 @@ def resolve_name(by_lang: dict[str, str], lang: str, species_id: int) -> str:
 
 
 BASE_INDEX_TTL = 30 * 86_400
+DETAILS_TTL = 30 * 86_400
+# Moves are read from one version group so level-up tables are consistent.
+MOVE_VERSION_GROUP = "black-2-white-2"
 
 
 @dataclass(frozen=True)
@@ -138,6 +142,7 @@ class PokeAPIClient:
         self.cache_dir.mkdir(parents=True, exist_ok=True)
         self._species: dict[int, dict[str, Any]] = {}
         self._lines: dict[int, EvoLine] = {}
+        self._details: dict[int, PokemonDetails] = {}
         self._base_index: list[BaseSpecies] | None = None
         self._index_lock = asyncio.Lock()
         self._rest_build_started = False
@@ -243,6 +248,45 @@ class PokeAPIClient:
         self._lines[base_species_id] = line
         self._save_line_cache()
         return line
+
+    # -- per-species details (stats, abilities, moves) ---------------------
+
+    def _details_file(self, species_id: int) -> Path:
+        return self.cache_dir / "pokemon-details-v1" / f"{species_id}.json"
+
+    def cached_details(self, species_id: int) -> PokemonDetails | None:
+        """Memory or disk only, never the network — safe to call from the refresh path."""
+        cached = self._details.get(species_id)
+        if cached is not None:
+            return cached
+        disk = _read_details(self._details_file(species_id))
+        if disk is None:
+            return None
+        self._details[species_id] = disk[1]
+        return disk[1]
+
+    async def pokemon_details(self, species_id: int) -> PokemonDetails:
+        cached = self._details.get(species_id)
+        if cached is not None:
+            return cached
+        path = self._details_file(species_id)
+        disk = _read_details(path)
+        if disk is not None and time.time() - disk[0] < DETAILS_TTL:
+            self._details[species_id] = disk[1]
+            return disk[1]
+        try:
+            raw = await self._get_json(f"{REST_BASE}/pokemon/{species_id}")
+            species = await self.species(species_id)
+            details = parse_details(species_id, raw, int(species.get("gender_rate", -1)))
+        except Exception:
+            # A stale copy beats nothing; details are enrichment, never required.
+            if disk is not None:
+                self._details[species_id] = disk[1]
+                return disk[1]
+            raise
+        _atomic_write_json(path, {"fetched_at": time.time(), "details": _details_to_dict(details)})
+        self._details[species_id] = details
+        return details
 
     # -- hatch candidate index ---------------------------------------------
 
@@ -384,3 +428,104 @@ def _atomic_write_json(path: Path, payload: Any) -> None:
     except OSError as exc:
         log.warning("could not write %s: %s", path, exc)
         tmp.unlink(missing_ok=True)
+
+
+def parse_details(species_id: int, raw: dict[str, Any], gender_rate: int) -> PokemonDetails:
+    types = [
+        (t.get("type") or {}).get("name") or ""
+        for t in sorted(raw.get("types") or [], key=lambda t: t.get("slot") or 0)
+    ]
+    stats = {
+        (s.get("stat") or {}).get("name") or "": int(s.get("base_stat") or 0)
+        for s in raw.get("stats") or []
+    }
+    abilities = sorted(
+        (
+            Ability(
+                name=(a.get("ability") or {}).get("name") or "",
+                slot=int(a.get("slot") or 0),
+                is_hidden=bool(a.get("is_hidden")),
+            )
+            for a in raw.get("abilities") or []
+        ),
+        key=lambda a: a.slot,
+    )
+    moves: list[MoveInfo] = []
+    for m in raw.get("moves") or []:
+        methods = [
+            LearnMethod(
+                method=(d.get("move_learn_method") or {}).get("name") or "",
+                level=int(d.get("level_learned_at") or 0),
+            )
+            for d in m.get("version_group_details") or []
+            if (d.get("version_group") or {}).get("name") == MOVE_VERSION_GROUP
+        ]
+        if methods:
+            name = (m.get("move") or {}).get("name") or ""
+            moves.append(MoveInfo(name=name, learn_methods=methods))
+    moves.sort(key=lambda m: m.name)
+    return PokemonDetails(
+        species_id=species_id,
+        name=raw.get("name") or "",
+        height=int(raw.get("height") or 0),
+        weight=int(raw.get("weight") or 0),
+        base_experience=raw.get("base_experience"),
+        gender_rate=gender_rate,
+        types=[t for t in types if t],
+        base_stats=stats,
+        abilities=abilities,
+        moves=moves,
+    )
+
+
+def _details_to_dict(d: PokemonDetails) -> dict[str, Any]:
+    return {
+        "species_id": d.species_id,
+        "name": d.name,
+        "height": d.height,
+        "weight": d.weight,
+        "base_experience": d.base_experience,
+        "gender_rate": d.gender_rate,
+        "types": d.types,
+        "base_stats": d.base_stats,
+        "abilities": [
+            {"name": a.name, "slot": a.slot, "is_hidden": a.is_hidden} for a in d.abilities
+        ],
+        "moves": [
+            {
+                "name": m.name,
+                "methods": [{"method": x.method, "level": x.level} for x in m.learn_methods],
+            }
+            for m in d.moves
+        ],
+    }
+
+
+def _read_details(path: Path) -> tuple[float, PokemonDetails] | None:
+    try:
+        raw = json.loads(path.read_text())
+        d = raw["details"]
+        details = PokemonDetails(
+            species_id=int(d["species_id"]),
+            name=d.get("name") or "",
+            height=int(d.get("height") or 0),
+            weight=int(d.get("weight") or 0),
+            base_experience=d.get("base_experience"),
+            gender_rate=int(d.get("gender_rate", -1)),
+            types=list(d.get("types") or []),
+            base_stats={k: int(v) for k, v in (d.get("base_stats") or {}).items()},
+            abilities=[
+                Ability(a["name"], int(a["slot"]), bool(a["is_hidden"]))
+                for a in d.get("abilities") or []
+            ],
+            moves=[
+                MoveInfo(
+                    m["name"],
+                    [LearnMethod(x["method"], int(x["level"])) for x in m.get("methods") or []],
+                )
+                for m in d.get("moves") or []
+            ],
+        )
+        return float(raw.get("fetched_at") or 0.0), details
+    except (OSError, json.JSONDecodeError, ValueError, KeyError, TypeError):
+        return None

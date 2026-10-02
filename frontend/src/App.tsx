@@ -8,11 +8,14 @@ import { Settings } from "./components/Settings";
 import { Shop } from "./components/Shop";
 import { Sprite } from "./components/Primitives";
 import type { CompanionEvent, Rarity, StateView } from "./types";
+import "./styles/controls.css";
 
 const TABS = ["Home", "Shop", "Bag", "Collection", "Settings"] as const;
 type Tab = (typeof TABS)[number];
 
 const POLL_MS = 5_000;
+/** Ignore reconnects closer together than this (a flapping link). */
+const RECONNECT_COOLDOWN_MS = 5_000;
 
 interface Toast {
   id: number;
@@ -21,10 +24,18 @@ interface Toast {
 }
 
 const EVENT_COPY: Record<CompanionEvent["kind"], (e: CompanionEvent) => string> = {
-  hatch: (e) => (e.shiny ? `A shiny ${e.name} hatched!` : `${e.name} hatched!`),
+  hatch: (e) =>
+    e.shiny
+      ? e.odds
+        ? `A shiny ${e.name} hatched! (1 in ${e.odds})`
+        : `A shiny ${e.name} hatched!`
+      : `${e.name} hatched!`,
   evolve: (e) => `Evolved into ${e.name}!`,
   graduate: (e) => `${e.name} graduated to the Pokédex!`,
-  ditto_reveal: (e) => `${e.disguise_name ?? "It"} was a Ditto all along!`,
+  ditto_reveal: (e) =>
+    e.shiny
+      ? `You thought it was ${e.disguise_name ?? "something else"} — it was a shiny Ditto!`
+      : `${e.disguise_name ?? "It"} was a Ditto all along!`,
 };
 
 export default function App() {
@@ -62,6 +73,29 @@ export default function App() {
     void load();
     const timer = window.setInterval(() => void load(), POLL_MS);
     return () => window.clearInterval(timer);
+  }, [load]);
+
+  // Refresh on network reconnect: only an offline -> online transition counts, and
+  // the state the page loaded with is not a transition.
+  useEffect(() => {
+    let online: boolean | null = null;
+    let lastTriggered = 0;
+    const update = () => {
+      const prev = online;
+      online = navigator.onLine;
+      if (prev === null || prev || !online) return;
+      const now = Date.now();
+      if (lastTriggered && now - lastTriggered < RECONNECT_COOLDOWN_MS) return;
+      lastTriggered = now;
+      void load(true);
+    };
+    online = navigator.onLine;
+    window.addEventListener("online", update);
+    window.addEventListener("offline", update);
+    return () => {
+      window.removeEventListener("online", update);
+      window.removeEventListener("offline", update);
+    };
   }, [load]);
 
   useEffect(() => {
@@ -178,7 +212,7 @@ export default function App() {
           <Bag
             state={state}
             busy={busy}
-            onUseCandy={() => void act(() => api.useCandy())}
+            onUseCandy={(count) => void act(() => api.useCandy(count))}
             onUseMint={() => void act(() => api.useMint())}
           />
         )}
@@ -188,6 +222,8 @@ export default function App() {
             state={state}
             busy={busy}
             onLanguage={(code) => void act(() => api.setLanguage(code))}
+            onDifficulty={(growth, shop) => void act(() => api.setDifficulty(growth, shop))}
+            onLimitDisplay={(mode) => void act(() => api.setLimitDisplay(mode))}
             onImported={() => void load()}
             notify={notify}
           />
@@ -201,6 +237,7 @@ export default function App() {
               <Sprite
                 speciesId={celebration.species_id}
                 shiny={Boolean(celebration.shiny)}
+                form={celebration.form ?? null}
                 size={120}
                 alt=""
               />

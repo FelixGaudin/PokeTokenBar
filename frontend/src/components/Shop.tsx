@@ -1,7 +1,8 @@
+import { useState } from "react";
 import { itemSpriteUrl } from "../lib/api";
 import { exact, tokens } from "../lib/format";
 import { Panel, Price } from "./Primitives";
-import type { Rarity, StateView } from "../types";
+import type { ActiveView, Rarity, ShopEggView, StateView } from "../types";
 
 function ItemIcon({ spriteName, emoji }: { spriteName: string | null; emoji: string }) {
   if (!spriteName) {
@@ -95,43 +96,123 @@ export function Shop({
       </Panel>
 
       <Panel title="Eggs">
-        <p className="note">
+        <p className="note note--lead">
           {hasActive
-            ? "Buying an egg releases the Pokémon you are raising right now. It disappears rather than graduating, so your Pokédex is unaffected."
-            : "Your egg is already incubating. Buying a graded egg replaces it and restarts incubation."}
+            ? "A shop egg sends off the Pokémon you are raising right now and starts a new egg."
+            : "Eggs unlock once your current egg hatches — a shop egg always sends off the Pokémon you are raising."}
         </p>
         <div className="cards">
           {shop.eggs.map((egg) => (
-            <article key={egg.tier ?? "any"} className="card">
-              <div className="card__head">
-                <span className="itemIcon" role="img" aria-hidden="true">
-                  🥚
-                </span>
-                <div>
-                  <h3 className="card__title">{egg.label}</h3>
-                  {egg.tier && <span className={`badge badge--${egg.tier}`}>{egg.tier}+</span>}
-                </div>
-              </div>
-              <p className="card__desc">{egg.description}</p>
-              <div className="card__foot">
-                <Price value={egg.price} affordable={egg.affordable} />
-                <button
-                  className="btn"
-                  disabled={busy || !egg.affordable}
-                  onClick={() => {
-                    const warning = hasActive
-                      ? `Release ${companion.active?.name} and start a new ${egg.label}? Its progress is lost for good.`
-                      : `Replace your current egg with a ${egg.label}? Incubation restarts from zero.`;
-                    if (window.confirm(warning)) onBuyEgg(egg.tier);
-                  }}
-                >
-                  {egg.affordable ? "Buy" : "Not enough"}
-                </button>
-              </div>
-            </article>
+            <EggCard
+              key={egg.tier ?? "any"}
+              egg={egg}
+              active={companion.active}
+              busy={busy}
+              onBuy={() => onBuyEgg(egg.tier)}
+            />
           ))}
         </div>
       </Panel>
     </div>
+  );
+}
+
+type EggStep = "idle" | "confirm" | "precious";
+
+function EggCard({
+  egg,
+  active,
+  busy,
+  onBuy,
+}: {
+  egg: ShopEggView;
+  active: ActiveView | null;
+  busy: boolean;
+  onBuy: () => void;
+}) {
+  const [step, setStep] = useState<EggStep>("idle");
+  const canBuy = egg.buyable && egg.affordable;
+  // Whatever made the egg unbuyable since the confirm opened also closes it.
+  const shown: EggStep = canBuy && active ? step : "idle";
+  const legendary = active?.rarity === "legendary";
+
+  function commit() {
+    setStep("idle");
+    onBuy();
+  }
+
+  return (
+    <article className="card">
+      <div className="card__head">
+        <span className="itemIcon" role="img" aria-hidden="true">
+          🥚
+        </span>
+        <div>
+          <h3 className="card__title">{egg.label}</h3>
+          {egg.tier && <span className={`badge badge--${egg.tier}`}>{egg.tier}+</span>}
+        </div>
+      </div>
+      <div className="card__desc">
+        <p className="eggCard__desc">{egg.description}</p>
+        {active && (
+          <p className="eggCard__release">
+            A released Pokémon stays in your Pokédex and can hatch again at the same odds —
+            only the growth progress is lost.
+          </p>
+        )}
+      </div>
+
+      {shown === "idle" && (
+        <>
+          <div className="card__foot">
+            <Price value={egg.price} affordable={egg.affordable} />
+            <button className="btn" disabled={busy || !canBuy} onClick={() => setStep("confirm")}>
+              {!egg.buyable || egg.affordable ? "Buy" : "Not enough"}
+            </button>
+          </div>
+          {!egg.buyable && egg.locked_reason && (
+            <p className="eggCard__locked">{egg.locked_reason}</p>
+          )}
+        </>
+      )}
+
+      {shown === "confirm" && active && (
+        <div className="eggCard__confirm">
+          <p>
+            Send off {active.name} for the {egg.label}?
+          </p>
+          <div className="eggCard__actions">
+            <button className="btn" onClick={() => setStep("idle")}>
+              Cancel
+            </button>
+            <button
+              className="btn btn--primary"
+              disabled={busy}
+              onClick={() => (active.is_high_value ? setStep("precious") : commit())}
+            >
+              Send off
+            </button>
+          </div>
+        </div>
+      )}
+
+      {shown === "precious" && active && (
+        <div className="eggCard__confirm eggCard__confirm--precious" role="alert">
+          <p>
+            {legendary
+              ? "⚠️ This is a Legendary Pokémon! Really send it off?"
+              : "⚠️ This one is shiny! Really send it off?"}
+          </p>
+          <div className="eggCard__actions">
+            <button className="btn" onClick={() => setStep("idle")}>
+              Cancel
+            </button>
+            <button className="btn btn--danger" disabled={busy} onClick={commit}>
+              {active.is_shiny && !legendary ? "Send shiny off" : "Send off"}
+            </button>
+          </div>
+        </div>
+      )}
+    </article>
   );
 }

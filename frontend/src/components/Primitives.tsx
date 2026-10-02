@@ -10,6 +10,7 @@ export function Sprite({
   size = 96,
   alt = "",
   className = "",
+  form = null,
 }: {
   speciesId: number;
   shiny?: boolean;
@@ -17,9 +18,19 @@ export function Sprite({
   size?: number;
   alt?: string;
   className?: string;
+  /** Unown letter; ignored for every other species. */
+  form?: string | null;
 }) {
   const [failed, setFailed] = useState(false);
   const [fellBack, setFellBack] = useState(false);
+  const key = `${speciesId}-${shiny}-${animated}-${form ?? ""}`;
+  const [seenKey, setSeenKey] = useState(key);
+  if (seenKey !== key) {
+    // A different image: forget the previous one's failures.
+    setSeenKey(key);
+    setFailed(false);
+    setFellBack(false);
+  }
 
   if (failed) {
     return (
@@ -39,7 +50,7 @@ export function Sprite({
       className={`sprite ${className}`}
       style={{ width: size, height: size }}
       // Animated Gen-V art only exists up to #649; fall back to the static PNG.
-      src={spriteUrl(speciesId, { animated: animated && !fellBack, shiny })}
+      src={spriteUrl(speciesId, { animated: animated && !fellBack, shiny, form })}
       alt={alt}
       loading="lazy"
       draggable={false}
@@ -56,19 +67,34 @@ export function ShinyBadge() {
   return <span className="badge badge--shiny">✨ Shiny</span>;
 }
 
+export type MeterTone =
+  | "accent"
+  | "warn"
+  | "crit"
+  | "gold"
+  | "wayUnder"
+  | "under"
+  | "onPace"
+  | "slightlyOver"
+  | "over"
+  | "wayOver";
+
 export function Meter({
   value,
   tone = "accent",
   label,
+  marker = null,
 }: {
   value: number;
-  tone?: "accent" | "warn" | "crit" | "gold";
+  tone?: MeterTone;
   label?: string;
+  /** Optional tick (0..1), e.g. where an even burn would sit now. */
+  marker?: number | null;
 }) {
   const pct = Math.max(0, Math.min(1, value)) * 100;
   return (
     <div
-      className={`meter meter--${tone}`}
+      className={`meter meter--${tone} ${marker !== null ? "meter--marked" : ""}`}
       role="progressbar"
       aria-valuenow={Math.round(pct)}
       aria-valuemin={0}
@@ -76,6 +102,14 @@ export function Meter({
       aria-label={label}
     >
       <span className="meter__fill" style={{ width: `${pct}%` }} />
+      {marker !== null && (
+        <span
+          className="meter__marker"
+          aria-hidden="true"
+          // Never overhang the ends: the tick's own width is subtracted.
+          style={{ left: `calc((100% - 2.5px) * ${Math.max(0, Math.min(1, marker))})` }}
+        />
+      )}
     </div>
   );
 }
@@ -101,41 +135,6 @@ export function Panel({
       )}
       {children}
     </section>
-  );
-}
-
-/** A 30-day token sparkline. Pure SVG so there is no chart dependency. */
-export function Sparkline({
-  points,
-  height = 44,
-}: {
-  points: { date: string; total_tokens: number }[];
-  height?: number;
-}) {
-  if (points.length < 2) return null;
-  const max = Math.max(...points.map((p) => p.total_tokens), 1);
-  const width = 100;
-  const step = width / (points.length - 1);
-  const coords = points.map((p, i) => {
-    const x = i * step;
-    const y = height - (p.total_tokens / max) * (height - 4) - 2;
-    return `${x.toFixed(2)},${y.toFixed(2)}`;
-  });
-  const line = `M ${coords.join(" L ")}`;
-  const area = `${line} L ${width},${height} L 0,${height} Z`;
-
-  return (
-    <div className="sparkline">
-      <svg viewBox={`0 0 ${width} ${height}`} preserveAspectRatio="none" aria-hidden="true">
-        <path className="sparkline__area" d={area} />
-        <path className="sparkline__line" d={line} vectorEffect="non-scaling-stroke" />
-      </svg>
-      <div className="sparkline__scale">
-        <span>{points[0].date.slice(5)}</span>
-        <span>peak {tokens(max)}</span>
-        <span>{points[points.length - 1].date.slice(5)}</span>
-      </div>
-    </div>
   );
 }
 

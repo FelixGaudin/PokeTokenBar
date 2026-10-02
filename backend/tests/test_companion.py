@@ -16,6 +16,7 @@ class StubPoke:
         self.lines = lines
         self.index = index if index is not None else [BaseSpecies(1, 255)]
         self.line_calls = 0
+        self.details: dict = {}
 
     async def line(self, base_species_id: int) -> EvoLine:
         self.line_calls += 1
@@ -29,6 +30,15 @@ class StubPoke:
 
     async def base_species(self, species_id: int):
         return next((e for e in self.index if e.id == species_id), None)
+
+    def cached_details(self, species_id: int):
+        return self.details.get(species_id)
+
+    async def pokemon_details(self, species_id: int):
+        try:
+            return self.details[species_id]
+        except KeyError:
+            raise ValueError(f"no stub details for {species_id}") from None
 
 
 def three_stage_line(base=1, rarity=Rarity.COMMON) -> EvoLine:
@@ -328,10 +338,8 @@ async def test_a_guaranteed_egg_only_hatches_at_or_above_its_tier(tmp_path):
         {1: three_stage_line(), 50: single_stage_line()},
         index=[BaseSpecies(1, 255), BaseSpecies(50, 40)],
     )
+    svc.state.egg_tier = Rarity.RARE
     await feed(svc, 1_000)
-    svc.state.used_since_install = 10_000_000_000
-    svc.buy_fresh_egg(Rarity.RARE)
-    assert svc.state.egg_tier is Rarity.RARE
 
     await feed(svc, 1_000 + B.EGG_HATCH_THRESHOLD + 10_000_000)
     a = svc.state.active
@@ -343,9 +351,8 @@ async def test_a_guaranteed_egg_only_hatches_at_or_above_its_tier(tmp_path):
 async def test_a_mismatched_guarantee_keeps_the_egg_rather_than_downgrading(tmp_path):
     """A stale index that only offers a common must not satisfy a rare guarantee."""
     svc = make_service(tmp_path, {1: three_stage_line()}, index=[BaseSpecies(1, 40)])
+    svc.state.egg_tier = Rarity.RARE
     await feed(svc, 1_000)
-    svc.state.used_since_install = 10_000_000_000
-    svc.buy_fresh_egg(Rarity.RARE)
     await feed(svc, 1_000 + B.EGG_HATCH_THRESHOLD + 1_000)
     # capture_rate said rare, the real line is common — keep the egg and the guarantee.
     assert svc.state.active is None
@@ -426,18 +433,32 @@ async def test_a_mint_always_changes_the_nature(tmp_path):
     assert svc.state.active.nature == after
 
 
-async def test_a_fresh_egg_discards_without_recording_a_catch(tmp_path):
+async def test_a_fresh_egg_releases_into_the_dex_without_counting_as_a_catch(tmp_path):
     svc = make_service(tmp_path, {1: three_stage_line()})
     await feed(svc, 1_000)
     await feed(svc, 1_000 + B.EGG_HATCH_THRESHOLD)
     assert svc.state.active is not None
-    svc.state.used_since_install = 20_000_000_000
+    svc.state.used_since_install = 5_000_000_000
 
     svc.buy_fresh_egg(None)
     assert svc.state.active is None
-    assert svc.state.dex == [], "a discarded Pokémon must not enter the Pokédex"
-    assert svc.state.collected_finals == []
+    assert len(svc.state.dex) == 1
+    released = svc.state.dex[0]
+    assert released.is_released
+    assert released.chain_order == [1], "only reached forms are recorded"
+    assert svc.state.collected_finals == [], "a release is not a completion"
     assert svc.state.egg_usage == 0
+    assert svc.state.spent_tokens == 1_000_000_000
+    assert svc.available_tokens == 4_000_000_000
+
+
+async def test_an_egg_cannot_be_bought_during_the_egg_stage(tmp_path):
+    svc = make_service(tmp_path, {1: three_stage_line()})
+    svc.state.used_since_install = 5_000_000_000
+    for tier in B.FRESH_EGG_SHOP_TIERS:
+        with pytest.raises(ValueError, match="egg hatches"):
+            svc.buy_fresh_egg(tier)
+    assert svc.available_tokens == 5_000_000_000
 
 
 async def test_an_unlisted_egg_tier_is_refused(tmp_path):

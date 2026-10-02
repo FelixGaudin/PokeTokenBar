@@ -9,3 +9,4 @@ __pycache__/
 .env.test
 .env.*
 !.env.example
+*.egg-info/

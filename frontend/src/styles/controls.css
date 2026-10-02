@@ -1,0 +1,277 @@
+/* Shop egg confirms, Bag candy stepper, Settings difficulty / limit display / snapshots. */
+
+:root {
+  /* Orange readable on both themes: the raw --warn is too light on white. */
+  --warn-text: var(--warn);
+}
+
+@media (prefers-color-scheme: light) {
+  :root {
+    --warn-text: color-mix(in srgb, var(--warn) 70%, #000);
+  }
+}
+
+/* ---------------------------------------------------------------- shop eggs */
+
+.card__desc .eggCard__desc,
+.card__desc .eggCard__release {
+  margin: 0;
+}
+
+.card__desc .eggCard__release {
+  margin-top: 6px;
+  font-size: 11.5px;
+  color: var(--text-faint);
+}
+
+.eggCard__locked {
+  margin: -4px 0 0;
+  font-size: 11.5px;
+  color: var(--text-faint);
+  text-align: right;
+}
+
+.eggCard__confirm {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  margin-top: auto;
+  padding: 10px;
+  background: var(--panel);
+  border: 1px solid var(--line);
+  border-radius: var(--radius-sm);
+}
+
+.eggCard__confirm p {
+  margin: 0;
+  font-size: 13px;
+}
+
+.eggCard__confirm--precious {
+  background: color-mix(in srgb, var(--warn) 12%, var(--panel));
+  border-color: color-mix(in srgb, var(--warn) 45%, var(--line));
+}
+
+.eggCard__confirm--precious p {
+  color: var(--warn-text);
+  font-weight: 600;
+}
+
+.eggCard__actions {
+  display: flex;
+  justify-content: flex-end;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.eggCard__actions .btn {
+  margin-left: 0;
+}
+
+.btn--danger {
+  background: var(--warn);
+  border-color: var(--warn);
+  color: #1a1204;
+}
+
+.btn--danger:hover:not(:disabled) {
+  background: color-mix(in srgb, var(--warn) 85%, #fff);
+}
+
+/* ---------------------------------------------------------------- candy */
+
+.candy__preview p {
+  margin: 0;
+  font-size: 12.5px;
+  color: var(--text-dim);
+}
+
+.candy__preview .candy__warn {
+  color: var(--warn-text);
+}
+
+.candy__foot {
+  flex-wrap: wrap;
+}
+
+.stepper {
+  display: inline-flex;
+  align-items: center;
+  background: var(--panel);
+  border: 1px solid var(--line);
+  border-radius: 8px;
+}
+
+.stepper__btn {
+  width: 28px;
+  height: 28px;
+  border: 0;
+  background: transparent;
+  color: var(--text);
+  font-size: 15px;
+  line-height: 1;
+  cursor: pointer;
+  border-radius: 7px;
+}
+
+.stepper__btn:hover:not(:disabled) {
+  background: var(--panel-2);
+}
+
+.stepper__btn:disabled {
+  opacity: 0.35;
+  cursor: not-allowed;
+}
+
+.stepper__value {
+  min-width: 34px;
+  text-align: center;
+  font-family: var(--mono);
+  font-size: 13px;
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+}
+
+/* ---------------------------------------------------------------- difficulty */
+
+.difficulty {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.difficulty__row {
+  display: grid;
+  grid-template-columns: 84px 1fr 48px;
+  align-items: center;
+  gap: 12px;
+}
+
+.difficulty__row label {
+  font-size: 13px;
+  color: var(--text-dim);
+}
+
+.difficulty__row input[type="range"] {
+  width: 100%;
+  min-width: 0;
+  accent-color: var(--accent);
+}
+
+.difficulty__value {
+  font-family: var(--mono);
+  font-size: 13px;
+  font-weight: 600;
+  text-align: right;
+  font-variant-numeric: tabular-nums;
+}
+
+.difficulty__save {
+  justify-content: flex-end;
+  margin-top: 10px;
+}
+
+.row__label {
+  font-size: 13px;
+  color: var(--text-dim);
+}
+
+/* ---------------------------------------------------------------- snapshots */
+
+.snapshots {
+  margin-top: 16px;
+  padding-top: 14px;
+  border-top: 1px solid var(--line);
+}
+
+.snapshots__head {
+  display: flex;
+  align-items: flex-start;
+  flex-wrap: wrap;
+  gap: 8px 12px;
+}
+
+.snapshots__head > div {
+  flex: 1 1 200px;
+  min-width: 0;
+}
+
+.snapshots__title {
+  margin: 0;
+  font-size: 14px;
+  font-weight: 600;
+}
+
+.snapshots__hint {
+  margin-top: 2px;
+}
+
+.snapshots__empty {
+  margin-top: 10px;
+  font-size: 13px;
+}
+
+.snapshots__list {
+  list-style: none;
+  margin: 10px 0 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.snapshot {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 6px 10px;
+  background: var(--panel-2);
+  border: 1px solid var(--line);
+  border-radius: var(--radius-sm);
+}
+
+.snapshot__mon {
+  display: grid;
+  place-items: center;
+  width: 28px;
+  height: 28px;
+  font-size: 18px;
+  flex-shrink: 0;
+}
+
+.snapshot__text {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  flex: 1;
+}
+
+.snapshot__date {
+  font-size: 13px;
+  font-weight: 550;
+}
+
+.snapshot__caption {
+  font-size: 11.5px;
+  color: var(--text-dim);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.snapshot__restore {
+  padding: 4px 10px;
+  font-size: 12px;
+}
+
+@media (max-width: 420px) {
+  .difficulty__row {
+    grid-template-columns: 72px 1fr 42px;
+    gap: 8px;
+  }
+}
+
+/* A note that introduces the cards under it, rather than following them. */
+.note.note--lead {
+  margin: 0 0 12px;
+}
