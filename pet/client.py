@@ -10,18 +10,64 @@ from __future__ import annotations
 import json
 import logging
 import threading
+import time
 import urllib.error
 import urllib.request
 from collections.abc import Callable
 from typing import Any
 
 from . import gtk3  # noqa: F401  (pins GI versions)
-from gi.repository import GLib
+from gi.repository import Gio, GLib
 
 log = logging.getLogger(__name__)
 
 TIMEOUT = 8.0
 MAX_BACKOFF = 60.0
+RECONNECT_COOLDOWN = 5.0
+
+
+def should_refresh_on_network(
+    prev: bool | None, current: bool, last_triggered_at: float | None, now: float
+) -> bool:
+    """A reconnect is an unavailable -> available change; the first event is not one."""
+    if prev is None or prev or not current:
+        return False
+    return last_triggered_at is None or now - last_triggered_at >= RECONNECT_COOLDOWN
+
+
+class ReconnectWatcher:
+    """Calls `on_reconnect` when the network comes back, via Gio.NetworkMonitor.
+
+    The signal is delivered on the GTK main loop, so no locking is needed.
+    """
+
+    def __init__(self, on_reconnect: Callable[[], None]) -> None:
+        self.on_reconnect = on_reconnect
+        self._monitor: Gio.NetworkMonitor | None = None
+        self._handler: int | None = None
+        self._prev: bool | None = None
+        self._last: float | None = None
+
+    def start(self) -> None:
+        if self._handler is not None:
+            return
+        self._monitor = Gio.NetworkMonitor.get_default()
+        self._handler = self._monitor.connect("network-changed", self._on_changed)
+
+    def stop(self) -> None:
+        if self._monitor is not None and self._handler is not None:
+            self._monitor.disconnect(self._handler)
+        self._handler = None
+        self._prev = None
+
+    def _on_changed(self, _monitor: Gio.NetworkMonitor, available: bool) -> None:
+        now = time.monotonic()
+        trigger = should_refresh_on_network(self._prev, available, self._last, now)
+        self._prev = available
+        if trigger:
+            self._last = now
+            log.debug("network is back; refreshing")
+            self.on_reconnect()
 
 
 class StateClient:

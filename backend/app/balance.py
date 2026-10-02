@@ -7,7 +7,13 @@ values in sync with the upstream `PokemonBalance` / `RareCandy` / `Mint` /
 
 from __future__ import annotations
 
+import math
 from enum import Enum
+
+
+def round_half_up(x: float) -> int:
+    """Swift's `.rounded()` for non-negative values. Python's round() is banker's."""
+    return math.floor(x + 0.5)
 
 
 class Rarity(str, Enum):
@@ -60,8 +66,14 @@ def graduation_total(rarity: Rarity) -> int:
     return _GRADUATION_TOTAL[rarity]
 
 
-def phase_threshold(rarity: Rarity, total_forms: int, stage_index: int) -> int:
-    """Tokens needed to leave `stage_index`.
+# A line that has graduated before grows twice as fast on every later hatch.
+REPEAT_GROWTH_MULTIPLIER = 2
+
+
+def phase_threshold(
+    rarity: Rarity, total_forms: int, stage_index: int, growth_multiplier: int = 1
+) -> int:
+    """Tokens needed to leave `stage_index`, at the default difficulty.
 
     A line with k forms splits its graduation total T so that form i costs
     T*i / (k(k+1)/2) — the sum is exactly T, and each stage costs more than the last.
@@ -70,7 +82,31 @@ def phase_threshold(rarity: Rarity, total_forms: int, stage_index: int) -> int:
     k = max(1, total_forms)
     i = stage_index + 1
     denom = k * (k + 1) / 2.0
-    return round(graduation_total(rarity) * i / denom)
+    standard = round_half_up(graduation_total(rarity) * i / denom)
+    return max(1, round_half_up(standard / max(1, growth_multiplier)))
+
+
+# Difficulty: two independent multipliers of the default balance. Growth scales the
+# egg and stage thresholds, shop scales prices. Rare Candy XP is never scaled, or it
+# would cancel against the thresholds it feeds.
+DIFFICULTY_MIN = 0.1
+DIFFICULTY_MAX = 2.0
+DEFAULT_DIFFICULTY = 1.0
+
+
+def clamp_difficulty(value: float) -> float:
+    if not isinstance(value, (int, float)) or not math.isfinite(value):
+        return DEFAULT_DIFFICULTY
+    return min(max(float(value), DIFFICULTY_MIN), DIFFICULTY_MAX)
+
+
+def scaled(base: int, difficulty: float) -> int:
+    return round_half_up(base * clamp_difficulty(difficulty))
+
+
+def collection_weight(weight: int, collected: bool) -> int:
+    """Halve the pull of something already owned, without ever reaching zero."""
+    return max(1, weight // 2) if collected else max(1, weight)
 
 
 class ItemKind(str, Enum):
@@ -135,12 +171,50 @@ def fresh_egg_price(tier: Rarity | None) -> int:
 # Shiny odds. The charm lowers the denominator (1/64 -> 1/48, about +33%).
 SHINY_DENOMINATOR = 64
 SHINY_DENOMINATOR_WITH_CHARM = 48
+
+
+def shiny_denominator(charm_owned: bool) -> int:
+    return SHINY_DENOMINATOR_WITH_CHARM if charm_owned else SHINY_DENOMINATOR
 # A common multi-stage hatch has this chance of secretly being a disguised Ditto.
 DITTO_DISGUISE_DENOMINATOR = 128
 DITTO_SPECIES_ID = 132
 
 # PokéAPI only ships animated Gen-V sprites up to national dex #649.
 ANIMATED_SPECIES_MAX = 649
+
+# Unown hatches as one of 28 letters. Uncollected letters weigh 2, collected ones 1.
+UNOWN_SPECIES_ID = 201
+UNOWN_FORMS = [chr(c) for c in range(ord("a"), ord("z") + 1)] + ["exclamation", "question"]
+UNOWN_SYMBOLS = {f: (f.upper() if len(f) == 1 else {"exclamation": "!", "question": "?"}[f])
+                 for f in UNOWN_FORMS}
+
+
+def resolve_unown_form(species_id: int, form: str | None) -> str | None:
+    """Unown always has a letter (legacy records read as A); nothing else has one."""
+    if species_id != UNOWN_SPECIES_ID:
+        return None
+    return form if form in UNOWN_SYMBOLS else "a"
+
+
+def roll_unown_form(r: int, collected: set[str]) -> str:
+    weights = [collection_weight(2, f in collected) for f in UNOWN_FORMS]
+    remaining = r % sum(weights)
+    for form, weight in zip(UNOWN_FORMS[:-1], weights[:-1], strict=True):
+        remaining -= weight
+        if remaining < 0:
+            return form
+    return UNOWN_FORMS[-1]
+
+
+def display_name(name: str, species_id: int, form: str | None) -> str:
+    resolved = resolve_unown_form(species_id, form)
+    return f"{name} [{UNOWN_SYMBOLS[resolved]}]" if resolved else name
+
+
+def sprite_name(species_id: int, form: str | None) -> str:
+    """PokéAPI sprite file stem: Unown A keeps the plain id, other letters get a suffix."""
+    resolved = resolve_unown_form(species_id, form)
+    return f"{species_id}-{resolved}" if resolved and resolved != "a" else str(species_id)
 
 NATURES = [
     "hardy", "lonely", "brave", "adamant", "naughty",

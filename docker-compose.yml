@@ -25,6 +25,10 @@ services:
       - ${PTB_CLAUDE_DIR:-${HOME}/.claude}:/host/claude:ro
       # Read-write: your save, the PokéAPI cache and the sprite cache.
       - ./data:/data
+      # OPTIONAL extra Claude accounts (each one a CLAUDE_CONFIG_DIR folder). Every
+      # .claude-* folder with a saved login under /host/accounts gets its own limits tab.
+      # Keep the mount points stable: an account's id is derived from its path.
+      # - ${HOME}/.claude-work:/host/accounts/.claude-work:ro
 
     environment:
       PTB_CLAUDE_ROOTS: /host/claude/projects
@@ -36,3 +40,5 @@ services:
       # Set to 0 to skip the credential read and the api.anthropic.com call entirely.
       PTB_LIMITS_ENABLED: ${PTB_LIMITS_ENABLED:-1}
       PTB_LIMITS_INTERVAL: ${PTB_LIMITS_INTERVAL:-300}
+      PTB_CLAUDE_ACCOUNTS_ROOT: /host/accounts
+      PTB_CLAUDE_ACCOUNT_DIRS: ${PTB_CLAUDE_ACCOUNT_DIRS:-}

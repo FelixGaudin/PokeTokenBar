@@ -12,7 +12,7 @@ from pathlib import Path
 
 import httpx
 
-from .balance import has_animated_sprite
+from .balance import has_animated_sprite, sprite_name
 
 log = logging.getLogger(__name__)
 
@@ -26,27 +26,36 @@ class SpriteStore:
         self.cache_dir.mkdir(parents=True, exist_ok=True)
 
     @staticmethod
-    def cache_key(species_id: int, *, animated: bool, shiny: bool) -> str:
-        return f"{species_id}-{'sh' if shiny else ''}{'a' if animated else 's'}"
+    def cache_key(species_id: int, *, animated: bool, shiny: bool, form: str | None = None) -> str:
+        # Unown A keeps the legacy key; other letters get their own file.
+        name = sprite_name(species_id, form)
+        return f"{name}-{'sh' if shiny else ''}{'a' if animated else 's'}"
 
-    def _sprite_url(self, species_id: int, *, animated: bool, shiny: bool) -> str:
-        if animated:
-            shiny_part = "shiny/" if shiny else ""
-            return f"{SPRITE_BASE}/versions/generation-v/black-white/animated/{shiny_part}{species_id}.gif"
+    def _sprite_url(
+        self, species_id: int, *, animated: bool, shiny: bool, form: str | None = None
+    ) -> str:
+        name = sprite_name(species_id, form)
         shiny_part = "shiny/" if shiny else ""
-        return f"{SPRITE_BASE}/{shiny_part}{species_id}.png"
+        if animated:
+            return f"{SPRITE_BASE}/versions/generation-v/black-white/animated/{shiny_part}{name}.gif"
+        return f"{SPRITE_BASE}/{shiny_part}{name}.png"
 
     async def pokemon(
-        self, client: httpx.AsyncClient, species_id: int, *, animated: bool, shiny: bool
+        self,
+        client: httpx.AsyncClient,
+        species_id: int,
+        *,
+        animated: bool,
+        shiny: bool,
+        form: str | None = None,
     ) -> tuple[bytes, str] | None:
         if animated and not has_animated_sprite(species_id):
             animated = False
-        key = self.cache_key(species_id, animated=animated, shiny=shiny)
+        key = self.cache_key(species_id, animated=animated, shiny=shiny, form=form)
         ext = "gif" if animated else "png"
         media = "image/gif" if animated else "image/png"
-        return await self._fetch_cached(
-            client, self.cache_dir / f"{key}.{ext}", self._sprite_url(species_id, animated=animated, shiny=shiny), media
-        )
+        url = self._sprite_url(species_id, animated=animated, shiny=shiny, form=form)
+        return await self._fetch_cached(client, self.cache_dir / f"{key}.{ext}", url, media)
 
     async def item(self, client: httpx.AsyncClient, name: str) -> tuple[bytes, str] | None:
         safe = "".join(ch for ch in name if ch.isalnum() or ch in "-_")

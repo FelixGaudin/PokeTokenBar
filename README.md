@@ -75,19 +75,34 @@ Keeping the first occurrence would badly under-count cost.
 | 5-hour block | Rolling window, used for the burn rate |
 | Burn rate | Block tokens ÷ minutes since the block's first turn |
 
-Costs use the current published rates (USD per million tokens). Cache writes are the
-5-minute-TTL rate (1.25× input); cache reads are 0.1× input. Current Claude models serve
-their 1M context at standard rates, so there's no long-context tier.
+Forked sessions replay earlier turns under a later timestamp. When the same turn shows up
+more than once, the earliest time is kept, so a fork never drags old usage into today.
 
-| Model | Input | Output | Cache write | Cache read |
-| --- | --- | --- | --- | --- |
-| `claude-opus-5`, `claude-opus-4-8` | $5 | $25 | $6.25 | $0.50 |
-| `claude-sonnet-5`, `claude-sonnet-4-6` | $3 | $15 | $3.75 | $0.30 |
-| `claude-haiku-4-5` | $1 | $5 | $1.25 | $0.10 |
-| `claude-fable-5` | $10 | $50 | $12.50 | $1.00 |
+**Costs.** Claude Code appends `type: "cost-state"` ledgers to each session file. When one
+is present, its per-model `costUSD` is what you see: it is spread over that model's turns in
+proportion to tokens, and the last ledger in a file wins. Turns with no ledger are priced
+from the table below (USD per million tokens; cache writes at the 5-minute rate). Current
+Claude models serve their 1M context at standard rates, so there's no long-context tier.
 
-Unknown model IDs fall back by family, so a new point release still prices correctly
-instead of silently reading as free.
+| Model                                     | Input | Output | Cache write | Cache read |
+| ----------------------------------------- | ----: | -----: | ----------: | ---------: |
+| `claude-opus-5-5`                         |    $4 |    $20 |       $5.00 |      $0.20 |
+| `claude-opus-5`, `claude-opus-4-8/4-7/4-6` |    $5 |    $25 |       $6.25 |      $0.50 |
+| `claude-sonnet-5`                         |    $2 |    $10 |       $2.50 |      $0.20 |
+| `claude-sonnet-4-6`, `-4-5`, `-4`         |    $3 |    $15 |       $3.75 |      $0.30 |
+| `claude-opus-4` (2025-05-14)              |   $15 |    $75 |      $18.75 |      $1.50 |
+| `claude-haiku-4-5`                        |    $1 |     $5 |       $1.25 |      $0.10 |
+| `claude-fable-5`                          |   $10 |    $50 |      $12.50 |      $1.00 |
+| `claude-fable-5-1`                        |   $10 |    $50 |      $12.50 |      $0.25 |
+
+There is no family fallback: an unknown model id has no price rather than borrowing a
+guess. Its cost reads **Unavailable** (logged once per model so a missing row gets
+noticed), and a total that is only partly priced shows the known part.
+
+The Home tab shows a day-by-day bar chart of the current month, and a **usage recap** for
+any calendar week, month or year. Logs only cover the current month, so each refresh copies
+daily totals into a ledger kept in the save (this year and last year), which also records
+the first day it covers — "no usage" and "not recorded yet" are told apart.
 
 ### Adding another provider
 
@@ -110,6 +125,34 @@ burn-rate view.
 
 Failures degrade quietly and never affect token accounting. A rejected or expired token
 surfaces as "run `/login`" in the UI, and a 429 backs off using the server's `Retry-After`.
+The credentials file is re-read on every fetch, so a `/login` to another account shows up on
+the next poll; if the file disappears, the last good token is used until it expires.
+
+Each bar carries a **pace marker**: where an even burn across the window would sit now. Its
+colour follows how far ahead or behind that pace you are (six tiers, from "Well under pace"
+to "Very fast"); hover a row for the details. Settings has a **Used / Remaining** switch.
+The account the limits belong to is read from `/api/oauth/profile` and shown next to the
+plan.
+
+### Several Claude accounts
+
+Claude Code run with `CLAUDE_CONFIG_DIR=/path` keeps a whole login in that folder. Mount
+each extra folder read-only and it gets its own tab of limits, its own Rare Candy grants,
+and its `projects/` joins the token scan:
+
+```yaml
+    volumes:
+      - ${HOME}/.claude-work:/host/accounts/.claude-work:ro
+    environment:
+      PTB_CLAUDE_ACCOUNTS_ROOT: /host/accounts   # .claude-* / .claude_* folders with a login
+      # or list them explicitly, optionally labelled: work=/host/accounts/.claude-work
+      # PTB_CLAUDE_ACCOUNT_DIRS: work=/host/accounts/.claude-work
+```
+
+An account's id is a hash of its mount path (and label), so keep mount points stable. A
+folder holding the same login as another tab is listed once. An extra account only earns
+candy after it has been seen below 100%, so mounting one that is already full pays nothing.
+The companion looks worn out when any account is at its limit.
 
 ### Why not an API key?
 
@@ -155,7 +198,16 @@ more than earlier ones.
   branch that still leads to a final form you don't have.
 - **Rare Candy** is granted free when you fill a limit window — 1 for a session window, 5
   for a weekly one. Edge-triggered, so it pays once per crossing and re-arms when the
-  window resets.
+  window drops below 100% or its reset time changes. The Bag feeds several at once, with a
+  preview of what that does (evolve, carry-over, graduate, leftover XP).
+- **Repeat hatches** of a line you have already graduated grow **2×** as fast.
+- **Individuals.** Every Pokémon gets persistent IVs, gender, ability, level (5 at hatch, 100
+  at graduation) and its last four level-up moves. Click a Pokédex cell for its detail page:
+  actual stats, species data and the complete move list, from PokéAPI.
+- **Unown** hatches as one of its 28 letters; uncollected letters are twice as likely.
+- **Difficulty.** Settings has two multipliers, 10%–200%: growth (egg and stage
+  thresholds) and shop prices. Changing growth keeps the fraction you have earned and never
+  evolves or hatches on the spot. It is a preference, not part of the save.
 
 ### Shop
 
@@ -171,10 +223,20 @@ touches your growth meter or your usage stats.
 | Fine Egg | 2.5B | Guarantees Uncommon or better. |
 | Prime Egg | 4B | Guarantees Rare or better (~10% Legendary). |
 
-A released Pokémon simply disappears — it does not graduate, so your Pokédex and the
-branch-choice weights are untouched, as if it had never been drawn. There's no
-legendary-only egg: that tier is decided by the `is_legendary` flag, which can't be
-expressed as a capture-rate floor.
+Eggs can only be bought while a Pokémon is active — an egg always means sending the current
+one off. A released Pokémon stays in the Pokédex (marked Released) but does not count as
+graduated: it keeps full hatch odds and earns no repeat boost. Sending off a shiny or a
+legendary asks twice. There's no legendary-only egg: that tier is decided by the
+`is_legendary` flag, which can't be expressed as a capture-rate floor.
+
+## Backups
+
+Every 12 hours, once there is progress, the save is copied to
+`data/.snapshots/state.json/` (the newest 10 are kept). Settings lists them and can take one
+now or restore one; restoring first snapshots the current state. If `state.json` is ever
+unreadable at startup, it is moved to `state.json.corrupt` and the newest snapshot is
+restored. Migrating a save from before individual values also writes a one-time
+`state.pre-profiles-v1.json`.
 
 ## Configuration
 
@@ -190,7 +252,10 @@ Every value has a working default.
 | `PTB_LIMITS_INTERVAL` | `300` | Seconds between limit fetches |
 | `PTB_CLAUDE_DIR` | `~/.claude` | If your Claude config lives elsewhere |
 | `PTB_CLAUDE_ROOTS` | — | Comma-separated log roots (set by compose) |
-| `PTB_DATA_DIR` | `/data` | Save + caches |
+| `PTB_CLAUDE_ACCOUNTS_ROOT` | — | Folder searched for extra `.claude-*` account folders |
+| `PTB_CLAUDE_ACCOUNT_DIRS` | — | Extra account folders, `label=path`, comma-separated |
+| `PTB_DEFAULT_CLAUDE_JSON` | — | `~/.claude.json`, to name the default account offline |
+| `PTB_DATA_DIR` | `/data` | Save, preferences, snapshots + caches |
 
 ## How it fits together
 
@@ -230,9 +295,13 @@ files takes ~0.8s; warm scans are ~25ms.
 | `GET /api/health` | Log roots found, credential mounted, last refresh |
 | `POST /api/refresh` | Force a re-scan now |
 | `POST /api/shop/item` · `/api/shop/egg` | Purchases |
-| `POST /api/bag/candy` · `/api/bag/mint` | Use an item |
+| `POST /api/bag/candy` (`{count}`) · `/api/bag/mint` | Use an item |
+| `GET /api/pokemon/{id}?form=` | Detail page: stats, moves, individuals |
+| `GET /api/recap?scope=week\|month\|year&offset=` | Usage recap |
+| `POST /api/settings/difficulty` · `/limit-display` | Preferences |
+| `GET` / `POST /api/snapshots` · `POST /api/snapshots/{id}/restore` | Backups |
 | `GET` / `POST /api/save` | Export / import your save |
-| `GET /api/sprite/{id}?animated=&shiny=` | Cached sprite proxy |
+| `GET /api/sprite/{id}?animated=&shiny=&form=` | Cached sprite proxy |
 | `GET /docs` | Interactive OpenAPI schema |
 
 Importing a save re-seeds the usage baseline from *this* machine's logs, so today's
@@ -251,7 +320,7 @@ cd frontend && npm install && npm run dev
 ```
 
 ```bash
-cd backend && ../.venv/bin/python -m pytest -q   # 53 tests
+cd backend && ../.venv/bin/python -m pytest -q
 cd frontend && npm run typecheck
 ```
 

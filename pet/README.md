@@ -26,7 +26,8 @@ menu, which writes `~/.config/autostart/poketokenbar-pet.desktop`.
 
 The pet is a read-only client of `/api/state` and `/api/sprite/...`. It stores no game
 state, so it can be killed and restarted freely, and it degrades quietly (dimmed, backing
-off) when the backend is not running.
+off) when the backend is not running. When the network comes back after an outage it asks the
+backend for an immediate re-scan (at most once every 5 s).
 
 Costs roughly 1.6-1.9% of one core while animating with the EXP bar (1.4% without it) and
 0.6% while the egg is incubating; drop `--fps` if you want less. It holds a single frame in the `sleep` state, so an idle machine
@@ -38,7 +39,7 @@ stays idle.
 | --- | --- |
 | `--url` | Backend base URL (default `http://localhost:8420`) |
 | `--interval` | Seconds between state polls (default 5) |
-| `--size` | 48, 96, 128 or 192; overrides the saved size |
+| `--size` | 48, 96, 128, 192, 256, 320 or 384; overrides the saved size |
 | `--fps` | Animation frame rate (default 10, matching the sprites' own 100ms frames) |
 | `--no-shape` | Disable click-through of transparent areas |
 | `--verbose` | Debug logging |

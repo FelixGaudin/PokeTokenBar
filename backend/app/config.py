@@ -37,6 +37,11 @@ class Settings:
     limits_interval: float
     timezone: ZoneInfo
     static_dir: Path | None = field(default=None)
+    # The default login's saved identity lives in ~/.claude.json, outside ~/.claude.
+    default_claude_json: Path | None = field(default=None)
+    # Extra accounts: listed `label=path` entries, plus `.claude-*` folders found here.
+    account_dirs: str | None = field(default=None)
+    accounts_root: Path | None = field(default=None)
 
     @property
     def state_file(self) -> Path:
@@ -49,6 +54,10 @@ class Settings:
     @property
     def sprite_dir(self) -> Path:
         return self.data_dir / "sprites"
+
+    @property
+    def preferences_file(self) -> Path:
+        return self.data_dir / "preferences.json"
 
 
 def load_settings() -> Settings:
@@ -78,7 +87,14 @@ def load_settings() -> Settings:
         limits_interval=float(os.environ.get("PTB_LIMITS_INTERVAL", "300")),
         timezone=tz,
         static_dir=static_dir if static_dir and static_dir.exists() else None,
+        default_claude_json=_optional_path(os.environ.get("PTB_DEFAULT_CLAUDE_JSON")),
+        account_dirs=os.environ.get("PTB_CLAUDE_ACCOUNT_DIRS"),
+        accounts_root=_optional_path(os.environ.get("PTB_CLAUDE_ACCOUNTS_ROOT")),
     )
+
+
+def _optional_path(raw: str | None) -> Path | None:
+    return Path(os.path.expanduser(raw)) if raw and raw.strip() else None
 
 
 SETTINGS = load_settings()

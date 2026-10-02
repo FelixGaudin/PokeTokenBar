@@ -22,7 +22,7 @@ from gi.repository import Gdk, GLib, Gtk
 
 from . import fmt
 from .bubble import Bubble
-from .client import StateClient
+from .client import ReconnectWatcher, StateClient
 from .config import SIZES, Config, autostart_file
 from .sprite import NOMINAL, Sprite, alpha_region
 
@@ -38,6 +38,7 @@ ALERT_MS = 6000
 HOP_DURATION = 0.7  # seconds
 LIMIT_ALERT_AT = 90.0
 LIMIT_REARM_AT = 85.0  # hysteresis, so a wobbling number cannot re-trigger
+ACCOUNT_TITLE_MAX = 14  # characters of an account title in the callout
 EGG_WOBBLE_PERIOD = 3.0  # seconds, matching the web UI's egg animation
 EGG_ANGLE_STEP = 0.02  # radians
 
@@ -149,6 +150,7 @@ class PetWindow(Gtk.Window):
         self._apply_geometry()
 
         self.client = StateClient(self.base_url, interval, self._on_state, self._on_error)
+        self.reconnect = ReconnectWatcher(self.client.refresh_now)
 
     # -------------------------------------------------------------- window setup
 
@@ -262,9 +264,11 @@ class PetWindow(Gtk.Window):
         self.connect("map-event", self._on_map)
         self.show_all()
         self.client.start()
+        self.reconnect.start()
         GLib.timeout_add(self.frame_ms, self._tick)
 
     def quit(self) -> None:
+        self.reconnect.stop()
         self.client.stop()
         self.bubble.destroy()
         Gtk.main_quit()
@@ -407,11 +411,30 @@ class PetWindow(Gtk.Window):
             f"<span size='small'>{fmt.rate(float(usage.get('burn_per_minute', 0.0)))}"
             f" ({esc(usage.get('burn_tier', '-'))})</span>"
         )
-        windows = limits.get("windows", [])
-        if windows:
-            parts = " - ".join(f"{esc(w['name'])} {float(w['utilization']):.0f}%" for w in windows)
-            stale = " <span foreground='#e0a34a'>(stale)</span>" if limits.get("stale") else ""
-            lines.append(f"<span size='small' foreground='#9aa3b2'>{parts}</span>{stale}")
+        accounts = limits.get("accounts") or []
+        if len(accounts) > 1:
+            # One line per account, labelled, so equal window names stay distinguishable.
+            for account in accounts:
+                windows = account.get("windows", [])
+                if not windows:
+                    continue
+                title = str(account.get("title", ""))
+                if len(title) > ACCOUNT_TITLE_MAX:
+                    title = title[: ACCOUNT_TITLE_MAX - 1] + "…"
+                parts = " - ".join(
+                    f"{esc(w['name'])} {float(w['utilization']):.0f}%" for w in windows
+                )
+                stale = " <span foreground='#e0a34a'>(stale)</span>" if account.get("stale") else ""
+                lines.append(
+                    f"<span size='small'><b>{esc(title)}</b></span>"
+                    f" <span size='small' foreground='#9aa3b2'>{parts}</span>{stale}"
+                )
+        else:
+            windows = limits.get("windows", [])
+            if windows:
+                parts = " - ".join(f"{esc(w['name'])} {float(w['utilization']):.0f}%" for w in windows)
+                stale = " <span foreground='#e0a34a'>(stale)</span>" if limits.get("stale") else ""
+                lines.append(f"<span size='small' foreground='#9aa3b2'>{parts}</span>{stale}")
         if self.error:
             lines.append(f"<span size='small' foreground='#e0a34a'>{esc(self.error)}</span>")
         return "\n".join(lines)

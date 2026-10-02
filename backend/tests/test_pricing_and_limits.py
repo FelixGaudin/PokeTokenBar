@@ -4,7 +4,7 @@ import time
 import pytest
 
 from app import limits as L
-from app.pricing import cost, rate_for
+from app.pricing import cost, estimated_cost, first_unpriced_sighting, rate_for
 
 MILLION = 1_000_000
 
@@ -12,12 +12,15 @@ MILLION = 1_000_000
 def test_published_rates_for_current_models():
     """Input / output / cache-write / cache-read, in USD per million tokens."""
     expected = {
+        "claude-opus-5-5": (4, 20, 5, 0.2),
         "claude-opus-5": (5, 25, 6.25, 0.5),
         "claude-opus-4-8": (5, 25, 6.25, 0.5),
-        "claude-sonnet-5": (3, 15, 3.75, 0.3),
+        "claude-sonnet-5": (2, 10, 2.5, 0.2),
         "claude-sonnet-4-6": (3, 15, 3.75, 0.3),
+        "claude-opus-4-20250514": (15, 75, 18.75, 1.5),
         "claude-haiku-4-5": (1, 5, 1.25, 0.1),
         "claude-fable-5": (10, 50, 12.5, 1.0),
+        "claude-fable-5-1": (10, 50, 12.5, 0.25),
     }
     for model, (inp, out, cw, cr) in expected.items():
         r = rate_for(model)
@@ -27,23 +30,54 @@ def test_published_rates_for_current_models():
         assert r.cache_read * MILLION == pytest.approx(cr)
 
 
-def test_cache_multipliers_hold():
-    """Cache write is 1.25x input (5-minute TTL); cache read is 0.1x input."""
-    for model in ("claude-opus-5", "claude-sonnet-5", "claude-haiku-4-5", "claude-fable-5"):
-        r = rate_for(model)
-        assert r.cache_write == pytest.approx(r.input * 1.25)
-        assert r.cache_read == pytest.approx(r.input * 0.1)
+def test_model_ids_are_normalised_before_lookup():
+    assert rate_for(" ANTHROPIC/CLAUDE-FABLE-5-1 ") == rate_for("claude-fable-5-1")
+    assert rate_for("claude-haiku-4-5") == rate_for("claude-haiku-4-5-20251001")
 
 
-def test_family_fallback_prices_unknown_point_releases():
-    assert rate_for("claude-opus-9-9").input == rate_for("claude-opus-5").input
-    assert rate_for("claude-sonnet-9").output == rate_for("claude-sonnet-5").output
+def test_unknown_models_never_borrow_a_family_price():
+    for model in (
+        "claude-opus-4-99",
+        "claude-fable-6",
+        "custom/claude-opus-4-8",
+        "antigravity/claude-opus-4-8",
+        "totally-unknown",
+    ):
+        assert estimated_cost(model, input=100, output=20, cache_write=0, cache_read=40) is None
+        assert cost(model, input=100, output=20, cache_write=0, cache_read=40) == 0
+    assert rate_for("claude-opus-6").input == 0
 
 
-def test_subscription_billed_sources_price_at_zero():
-    assert rate_for("grok-4").input == 0
-    assert rate_for("antigravity/claude-sonnet-4-6").input == 0
-    assert rate_for("totally-unknown-model").input == 0
+def test_models_in_the_logs_are_all_priced():
+    """Add a row here as soon as Claude Code starts reporting a new model id."""
+    expected = {
+        "claude-opus-5": 0.19409175,
+        "claude-opus-5-5": 0.1467382,
+        "claude-sonnet-5": 0.0776367,
+        "claude-opus-4-8": 0.19409175,
+        "claude-opus-4-7": 0.19409175,
+        "claude-sonnet-4-6": 0.11645505,
+        "claude-haiku-4-5": 0.03881835,
+        "claude-fable-5": 0.3881835,
+        "claude-fable-5-1": 0.3561765,
+    }
+    for model, usd in expected.items():
+        got = estimated_cost(model, input=2, output=175, cache_write=26_939, cache_read=42_676)
+        assert got == pytest.approx(usd), model
+
+
+def test_estimated_cost_edge_cases():
+    assert estimated_cost("claude-opus-5", input=-1, output=0, cache_write=0, cache_read=0) is None
+    assert estimated_cost("claude-opus-5", input=0, output=0, cache_write=0, cache_read=0) == 0
+    everything = dict(input=MILLION, output=MILLION, cache_write=MILLION, cache_read=MILLION)
+    assert cost("claude-fable-5", **everything) == pytest.approx(73.5)
+    assert cost("claude-fable-5-1", input=0, output=0, cache_write=0, cache_read=MILLION) == 0.25
+
+
+def test_an_unpriced_model_is_reported_once():
+    assert first_unpriced_sighting("claude-test-unpriced") is True
+    assert first_unpriced_sighting("claude-test-unpriced") is False
+    assert first_unpriced_sighting("ANTHROPIC/CLAUDE-TEST-UNPRICED") is False
 
 
 def test_cost_arithmetic():
@@ -307,3 +341,36 @@ def test_an_explicit_retry_after_wins_over_the_backoff_curve():
     """The server's own guidance must not be overridden by our escalation."""
     resp = httpx.Response(429, headers={"Retry-After": "45"})
     assert L._retry_after_seconds(resp) == 45
+
+
+def test_account_display():
+    assert L.account_display("dev@example.com", "Acme Corp") == "dev@example.com · Acme Corp"
+    assert L.account_display("dev@example.com", "dev@example.com's Organization") == "dev@example.com"
+    assert L.account_display("dev@example.com", None) == "dev@example.com"
+    assert L.account_display(None, "Acme") is None
+
+
+def test_parse_profile_requires_an_email():
+    ok = {"account": {"email": "dev@example.com"}, "organization": {"name": "Acme Corp"}}
+    assert L.parse_profile(ok) == ("dev@example.com", "Acme Corp")
+    assert L.parse_profile({"account": {}, "organization": {"name": "x"}}) is None
+    assert L.parse_profile({"account": {"email": "a@b"}, "organization": None}) == ("a@b", None)
+
+
+def test_the_last_good_token_stands_in_when_the_file_vanishes(tmp_path):
+    path = tmp_path / "creds.json"
+    path.write_text(json.dumps(_creds(accessToken="token-a")))
+    provider = L.LimitsProvider(path)
+    assert provider._credential().access_token == "token-a"
+    path.write_text(json.dumps(_creds(accessToken="token-b")))
+    assert provider._credential().access_token == "token-b", "a /login switch is picked up"
+    path.unlink()
+    assert provider._credential().access_token == "token-b"
+    path.write_text('{"claudeAiOauth": null}')
+    assert provider._credential().access_token == "token-b"
+
+
+def test_window_spans():
+    assert L.LimitWindow("s", "5h", "session", 1.0).span_seconds == 5 * 3600
+    assert L.LimitWindow("w", "W", "weekly_scoped", 1.0).span_seconds == 7 * 86400
+    assert L.LimitWindow("m", "M", "monthly", 1.0).span_seconds is None

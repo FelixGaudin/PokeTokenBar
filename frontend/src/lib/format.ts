@@ -1,3 +1,5 @@
+import type { CostCoverage } from "../types";
+
 /** Compact token counts: 265_800_000 -> "265.8M". */
 export function tokens(n: number): string {
   const abs = Math.abs(n);
@@ -17,14 +19,31 @@ export function exact(n: number): string {
   return n.toLocaleString("en-US");
 }
 
+/** Plain dollars, two decimals, no grouping: `$1234.50`. */
 export function usd(n: number): string {
-  if (n === 0) return "$0.00";
-  if (Math.abs(n) < 0.01) return "<$0.01";
-  return `$${n.toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
+  return `$${n.toFixed(2)}`;
 }
 
+/** A cost total that knows where it came from. Unavailable only when nothing was priced. */
+export function costText(cost: number, coverage: CostCoverage): string {
+  const known = coverage.reported || coverage.estimated;
+  if (coverage.unknown && !known) return "Unavailable";
+  return usd(cost);
+}
+
+/** `50%` for whole numbers, `54.6%` otherwise. */
 export function percent(n: number): string {
+  return Number.isInteger(n) ? `${n}%` : `${n.toFixed(1)}%`;
+}
+
+/** Rounded percent for dense readouts such as limit rows. */
+export function percentRound(n: number): string {
   return `${Math.round(n)}%`;
+}
+
+/** Swift's `.rounded()`: half away from zero (Math.round rounds -2.5 to -2). */
+export function roundHalfAway(x: number): number {
+  return Math.sign(x) * Math.round(Math.abs(x));
 }
 
 /** "4 days, 23 hr" — matches the catch log's age column. */

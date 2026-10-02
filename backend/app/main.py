@@ -17,10 +17,16 @@ from .schemas import (
     ActionResult,
     BuyEggRequest,
     BuyItemRequest,
+    DifficultyRequest,
     LanguageRequest,
+    LimitDisplayRequest,
+    PokemonDetailView,
+    RecapView,
+    SnapshotView,
     StateView,
+    UseCandyRequest,
 )
-from .state import SaveState
+from .state import SaveState, migrate_profiles, parse_save, sanitize
 
 logging.basicConfig(
     level=logging.INFO,
@@ -99,7 +105,8 @@ async def buy_item(body: BuyItemRequest) -> ActionResult:
         runtime.companion.buy_item(kind)
     except ValueError as exc:
         raise HTTPException(status_code=409, detail=str(exc)) from None
-    return ActionResult(ok=True, message=f"Bought {kind.value}")
+    labels = {"rareCandy": "Rare Candy", "mint": "Mint", "shinyCharm": "Shiny Charm"}
+    return ActionResult(ok=True, message=f"Bought a {labels[kind.value]}")
 
 
 @app.post("/api/shop/egg", response_model=ActionResult)
@@ -112,12 +119,18 @@ async def buy_egg(body: BuyEggRequest) -> ActionResult:
 
 
 @app.post("/api/bag/candy", response_model=ActionResult)
-async def use_candy() -> ActionResult:
+async def use_candy(body: UseCandyRequest | None = None) -> ActionResult:
+    count = body.count if body else 1
     try:
-        await runtime.companion.use_rare_candy()
+        outcome = await runtime.companion.use_rare_candy(count)
     except ValueError as exc:
         raise HTTPException(status_code=409, detail=str(exc)) from None
-    return ActionResult(ok=True, message="Rare Candy used")
+    messages = {
+        "graduated": "Rare Candy used — it graduated!",
+        "evolved": "Rare Candy used — it evolved!",
+        "progressed": "Rare Candy used",
+    }
+    return ActionResult(ok=True, message=messages[outcome])
 
 
 @app.post("/api/bag/mint", response_model=ActionResult)
@@ -140,6 +153,100 @@ async def set_language(body: LanguageRequest) -> ActionResult:
     return ActionResult(ok=True, message=f"Language set to {body.language}")
 
 
+@app.post("/api/settings/difficulty", response_model=ActionResult)
+async def set_difficulty(body: DifficultyRequest) -> ActionResult:
+    # Settings changes never evolve, graduate or hatch on the spot.
+    runtime.companion.set_growth_difficulty(body.growth)
+    runtime.companion.set_shop_difficulty(body.shop)
+    return ActionResult(ok=True, message="Difficulty saved")
+
+
+@app.post("/api/settings/limit-display", response_model=ActionResult)
+async def set_limit_display(body: LimitDisplayRequest) -> ActionResult:
+    if body.mode not in ("used", "remaining"):
+        raise HTTPException(status_code=400, detail=f"unknown mode: {body.mode}")
+    runtime.prefs.prefs.limit_display = body.mode
+    runtime.prefs.save()
+    return ActionResult(ok=True, message=None)
+
+
+@app.get("/api/recap", response_model=RecapView)
+async def recap(scope: str = "week", offset: int = 0) -> RecapView:
+    if scope not in ("week", "month", "year"):
+        raise HTTPException(status_code=400, detail=f"unknown scope: {scope}")
+    return runtime.recap(scope, min(0, offset))
+
+
+@app.get("/api/pokemon/{species_id}", response_model=PokemonDetailView)
+async def pokemon_detail(species_id: int, form: str | None = None) -> PokemonDetailView:
+    if not 1 <= species_id <= 1025:
+        raise HTTPException(status_code=404, detail="no such species")
+    try:
+        return await runtime.pokemon_detail(species_id, form)
+    except Exception as exc:  # noqa: BLE001 - network or parse failure
+        log.info("details for %d failed: %s", species_id, exc)
+        raise HTTPException(
+            status_code=502, detail="Pokémon details could not be loaded."
+        ) from None
+
+
+@app.get("/api/snapshots", response_model=list[SnapshotView])
+async def list_snapshots() -> list[SnapshotView]:
+    return [_snapshot_view(s) for s in runtime.store.list_snapshots()]
+
+
+@app.post("/api/snapshots", response_model=SnapshotView)
+async def create_snapshot() -> SnapshotView:
+    try:
+        return _snapshot_view(runtime.store.create_snapshot())
+    except OSError as exc:
+        raise HTTPException(status_code=500, detail=f"could not write snapshot: {exc}") from None
+
+
+@app.post("/api/snapshots/{snapshot_id}/restore", response_model=ActionResult)
+async def restore_snapshot(snapshot_id: str) -> ActionResult:
+    # Read first: the safety snapshot below may prune the very file being restored.
+    try:
+        state = runtime.store.read_snapshot(snapshot_id)
+    except (OSError, ValueError) as exc:
+        raise HTTPException(status_code=404, detail=f"snapshot unreadable: {exc}") from None
+    try:
+        runtime.store.create_snapshot()
+    except OSError as exc:
+        log.warning("safety snapshot before restore failed: %s", exc)
+    await _apply_save(state)
+    return ActionResult(
+        ok=True,
+        message=f"Restored — {len(state.dex)} in Pokédex · {state.used_since_install:,} lifetime",
+    )
+
+
+def _snapshot_view(s) -> SnapshotView:
+    return SnapshotView(
+        id=s.id,
+        created_at=s.created_at.isoformat(),
+        dex_count=s.dex_count,
+        lifetime_tokens=s.lifetime_tokens,
+        current_species_id=s.current_species_id,
+        current_is_shiny=s.current_is_shiny,
+    )
+
+
+async def _apply_save(state: SaveState) -> None:
+    """Shared by import and restore."""
+    sanitize(state)
+    migrate_profiles(state)
+    # The imported ledger belongs to another machine's log history, so drop the
+    # baseline and let the next refresh re-seed it here. Without this, the first
+    # refresh would read this machine's whole daily total as brand-new usage.
+    state.claimed_today_by_provider = None
+    state.install_baseline_set = False
+    state.last_date = None
+    runtime.store.replace(state)
+    runtime.companion.reset_after_import()
+    await runtime.refresh()
+
+
 @app.get("/api/save")
 async def export_save() -> Response:
     payload = runtime.store.state.model_dump_json(indent=2)
@@ -158,29 +265,23 @@ async def import_save(request: Request) -> ActionResult:
     except (json.JSONDecodeError, ValueError) as exc:
         raise HTTPException(status_code=400, detail=f"not valid JSON: {exc}") from None
     try:
-        state = SaveState.model_validate(parsed)
+        state = parse_save(parsed)
     except Exception as exc:  # noqa: BLE001 - report the validation failure verbatim
         raise HTTPException(status_code=400, detail=f"not a valid save: {exc}") from None
-
-    # The imported ledger belongs to another machine's log history, so drop the
-    # baseline and let the next refresh re-seed it here. Without this, the first
-    # refresh would read this machine's whole daily total as brand-new usage.
-    state.claimed_today_by_provider = None
-    state.install_baseline_set = False
-    state.last_date = None
-
-    runtime.store.replace(state)
-    runtime.companion.current_line = None
-    await runtime.refresh()
+    await _apply_save(state)
     return ActionResult(ok=True, message="Save imported")
 
 
 @app.get("/api/sprite/{species_id}")
-async def sprite(species_id: int, animated: bool = True, shiny: bool = False) -> Response:
+async def sprite(
+    species_id: int, animated: bool = True, shiny: bool = False, form: str | None = None
+) -> Response:
     if not 1 <= species_id <= 1025:
         raise HTTPException(status_code=404, detail="no such species")
     client = await runtime.http()
-    got = await runtime.sprites.pokemon(client, species_id, animated=animated, shiny=shiny)
+    got = await runtime.sprites.pokemon(
+        client, species_id, animated=animated, shiny=shiny, form=form
+    )
     if got is None:
         raise HTTPException(status_code=404, detail="sprite unavailable")
     data, media_type = got
