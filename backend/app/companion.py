@@ -13,7 +13,7 @@ import random
 import time
 import uuid
 from dataclasses import dataclass
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta, timezone
 
 from . import balance as B
 from .balance import ItemKind, Rarity
@@ -686,7 +686,8 @@ class CompanionService:
             m.total_forms = len(plan)
             m.used_at_stage = carry_over
             m.ditto_revealed = True
-            # The boost stays: it was earned by the line that hatched.
+            # The hatch boost came from the disguise's line; only a repeat Ditto keeps one.
+            m.has_growth_boost = self.has_collected_final(ditto_line.base_id)
             if m.profile is not None:
                 m.profile.rebase_for_species(old_rarity, ditto_line.rarity)
             self.current_line = ditto_line
@@ -897,15 +898,21 @@ class CompanionService:
         for w in windows:
             if w.epoch is not None:
                 previous = epochs.get(w.key)
-                if previous is not None and _is_new_window(previous, w.epoch):
+                if previous is None:
+                    epochs[w.key] = w.epoch
+                elif _is_new_window(previous, w.epoch, w.kind):
                     grant_tier.pop(w.key, None)
-                epochs[w.key] = w.epoch
+                    epochs[w.key] = w.epoch
             if w.utilization < 100:
                 grant_tier.pop(w.key, None)
+                if w.epoch is not None:
+                    epochs[w.key] = w.epoch
                 continue
             if grant_tier.get(w.key, 0) >= 1:
                 continue
             grant_tier[w.key] = 1
+            if w.epoch is not None:
+                epochs[w.key] = w.epoch
             count = B.RARE_CANDY_WEEKLY_GRANT if w.kind == "weekly" else 1
             grants.append(CandyGrant(w.key, w.name, count))
         return grants
@@ -950,16 +957,27 @@ class CompanionService:
     # shop and bag
     # ------------------------------------------------------------------
 
-    def buy_item(self, kind: ItemKind) -> None:
-        price = self.price(kind)
+    def max_buy_count(self, kind: ItemKind) -> int:
+        """How many the wallet affords at once; a passive item is a single purchase."""
+        if kind.is_passive and self.item_count(kind) > 0:
+            return 0
+        affordable = self.available_tokens // self.price(kind)
+        return min(1, affordable) if kind.is_passive else affordable
+
+    def buy_item(self, kind: ItemKind, count: int = 1) -> None:
+        if count < 1:
+            raise ValueError("count must be at least 1")
         if kind.is_passive and self.item_count(kind) > 0:
             raise ValueError(f"{kind.value} is already owned")
-        if self.available_tokens < price:
+        if kind.is_passive and count > 1:
+            raise ValueError(f"{kind.value} can only be bought once")
+        # All or nothing: never a partial purchase of what the wallet covers.
+        if count > self.max_buy_count(kind):
             raise ValueError("not enough tokens")
         # Purchases only raise spent_tokens: growth progress, evolution and the
         # today/week/month stats are all untouched.
-        self.state.spent_tokens += price
-        self.state.inventory[kind.value] = self.item_count(kind) + 1
+        self.state.spent_tokens += self.price(kind) * count
+        self.state.inventory[kind.value] = self.item_count(kind) + count
         self.save()
 
     def buy_fresh_egg(self, tier: Rarity | None) -> None:
@@ -1109,18 +1127,33 @@ class CompanionService:
         return event
 
 
-# A reset that moves by less than this is the same window reported with jitter;
-# a genuinely new 5-hour or weekly window always moves by more.
-NEW_WINDOW_MIN_SHIFT = timedelta(hours=1)
+# A reset has to advance by this much to count as a new window. Smaller moves are the
+# same window reported with jitter (sub-second resets_at noise) or rolling drift.
+NEW_WINDOW_MIN_ADVANCE = {"session": timedelta(minutes=30), "weekly": timedelta(hours=24)}
 
 
-def _is_new_window(previous: str, current: str) -> bool:
+def _parse_epoch(value: str) -> datetime | None:
+    """A reset marker as a time: Unix seconds or milliseconds, or ISO 8601."""
     try:
-        before = datetime.fromisoformat(previous.replace("Z", "+00:00"))
-        after = datetime.fromisoformat(current.replace("Z", "+00:00"))
-        return after - before > NEW_WINDOW_MIN_SHIFT
-    except (TypeError, ValueError):
-        return previous != current
+        ts = float(value)
+    except ValueError:
+        ts = None
+    if ts is not None and 100_000_000 < ts < 1e15:
+        return datetime.fromtimestamp(ts / 1000 if ts > 1e12 else ts, UTC)
+    try:
+        parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
+    except ValueError:
+        return None
+    return parsed if parsed.tzinfo else parsed.replace(tzinfo=UTC)
+
+
+def _is_new_window(previous: str, current: str, kind: str) -> bool:
+    if previous == current:
+        return False
+    before, after = _parse_epoch(previous), _parse_epoch(current)
+    if before is None or after is None:
+        return True
+    return after - before >= NEW_WINDOW_MIN_ADVANCE[kind]
 
 
 def _longest_valid_path(ids: list[int], root: EvoNode) -> tuple[list[int], EvoNode]:

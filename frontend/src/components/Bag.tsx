@@ -11,11 +11,13 @@ export function Bag({
   busy,
   onUseCandy,
   onUseMint,
+  onShop,
 }: {
   state: StateView;
   busy: boolean;
   onUseCandy: (count: number) => void;
   onUseMint: () => void;
+  onShop: () => void;
 }) {
   const { bag, companion } = state;
 
@@ -26,6 +28,11 @@ export function Bag({
           Your bag is empty. Rare Candy is granted free whenever you fill a rate-limit
           window, or you can buy items in the Shop.
         </p>
+        <div className="row bag__shop">
+          <button type="button" className="btn" onClick={onShop}>
+            Shop
+          </button>
+        </div>
       </Panel>
     );
   }

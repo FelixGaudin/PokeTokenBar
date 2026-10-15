@@ -198,6 +198,8 @@ export interface ShopItemView {
   affordable: boolean;
   owned: boolean;
   passive: boolean;
+  /** How many one purchase can take: wallet ÷ price, at most 1 for a held item. */
+  max_count: number;
 }
 
 export interface ShopEggView {

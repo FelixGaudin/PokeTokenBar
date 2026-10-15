@@ -1,4 +1,5 @@
 import math
+from datetime import UTC, datetime, timedelta
 
 import pytest
 
@@ -15,7 +16,14 @@ from app.profile import (
     actual_stat,
     stat_bar_scale,
 )
-from app.state import DexEntry, PreferenceStore, SaveState, StateStore, migrate_profiles
+from app.state import (
+    DexEntry,
+    MonState,
+    PreferenceStore,
+    SaveState,
+    StateStore,
+    migrate_profiles,
+)
 
 from .test_companion import (
     AlwaysDisguiseRNG,
@@ -146,7 +154,7 @@ def test_legacy_saves_have_no_boost():
     assert s.active.phase_threshold == COMMON_STAGE_0
 
 
-async def test_a_boosted_disguise_reveals_at_the_boosted_threshold_and_keeps_it(tmp_path):
+async def test_a_boosted_disguise_reveals_at_the_boosted_threshold_then_drops_it(tmp_path):
     svc = make(
         tmp_path,
         {1: three_stage_line(), B.DITTO_SPECIES_ID: ditto_line()},
@@ -159,8 +167,25 @@ async def test_a_boosted_disguise_reveals_at_the_boosted_threshold_and_keeps_it(
     assert a.has_growth_boost and a.ditto_disguise is not None
     await feed(svc, 1_000 + B.EGG_HATCH_THRESHOLD + 62_500_000)
     a = svc.state.active
-    assert a.ditto_revealed and a.has_growth_boost
+    assert a.ditto_revealed and not a.has_growth_boost
     assert a.used_at_stage == 0
+    assert svc.stage_threshold == 3_000_000_000
+
+
+async def test_revealing_an_already_graduated_ditto_grants_the_repeat_boost(tmp_path):
+    svc = make(
+        tmp_path,
+        {1: three_stage_line(), B.DITTO_SPECIES_ID: ditto_line()},
+        rng=AlwaysDisguiseRNG(7),
+    )
+    svc.state.collected_finals = [f"{B.DITTO_SPECIES_ID}:{B.DITTO_SPECIES_ID}"]
+    await feed(svc, 1_000)
+    await feed(svc, 1_000 + B.EGG_HATCH_THRESHOLD)
+    a = svc.state.active
+    assert not a.has_growth_boost and a.ditto_disguise is not None
+    await feed(svc, 1_000 + B.EGG_HATCH_THRESHOLD + COMMON_STAGE_0)
+    a = svc.state.active
+    assert a.ditto_revealed and a.has_growth_boost
     assert svc.stage_threshold == 1_500_000_000
 
 
@@ -291,6 +316,56 @@ def test_a_first_epoch_on_an_old_save_does_not_regrant():
     w = CandyWindow("session", "5-hour", "session", 100.0, epoch="E1")
     assert CompanionService.evaluate_candy_grants([w], tier, epochs) == []
     assert epochs == {"session": "E1"} and tier == {"session": 1}
+
+
+def _grants(key: str, kind: str, epoch: str, tier: dict, epochs: dict) -> list[int]:
+    w = CandyWindow(key, key, kind, 100.0, epoch=epoch)
+    return [g.count for g in CompanionService.evaluate_candy_grants([w], tier, epochs)]
+
+
+def test_sub_second_reset_noise_does_not_regrant():
+    tier: dict[str, int] = {}
+    epochs: dict[str, str] = {}
+    assert _grants("five_hour", "session", "2026-09-28T17:10:00.928794+00:00", tier, epochs) == [1]
+    assert _grants("five_hour", "session", "2026-09-28T17:10:00.935515+00:00", tier, epochs) == []
+    assert tier["five_hour"] == 1
+
+
+def test_unix_second_jitter_does_not_regrant():
+    tier: dict[str, int] = {}
+    epochs: dict[str, str] = {}
+    assert _grants("s", "session", "1790613843", tier, epochs) == [1]
+    assert _grants("s", "session", "1790613844", tier, epochs) == []
+    assert _grants("s", "session", "1790613843", tier, epochs) == []
+    assert tier["s"] == 1
+
+
+def test_rolling_drift_does_not_regrant():
+    tier: dict[str, int] = {}
+    epochs: dict[str, str] = {}
+    assert _grants("s", "session", "2026-09-28T19:10:12Z", tier, epochs) == [1]
+    assert _grants("s", "session", "2026-09-28T19:11:12Z", tier, epochs) == []
+    assert _grants("s", "session", "2026-09-28T19:15:12Z", tier, epochs) == []
+    # Drift is measured against the granted window, not the last poll.
+    assert epochs["s"] == "2026-09-28T19:10:12Z"
+
+
+def test_a_full_session_reset_at_100_regrants():
+    tier: dict[str, int] = {}
+    epochs: dict[str, str] = {}
+    _grants("s", "session", "1790613843", tier, epochs)
+    assert _grants("s", "session", "1790631843", tier, epochs) == [1]
+    assert epochs["s"] == "1790631843"
+
+
+def test_a_weekly_window_needs_a_day_of_advance_to_regrant():
+    tier: dict[str, int] = {}
+    epochs: dict[str, str] = {}
+    _grants("w", "weekly", "2026-09-20T00:00:00Z", tier, epochs)
+    assert _grants("w", "weekly", "2026-09-20T12:00:00Z", tier, epochs) == []
+    weekly = [B.RARE_CANDY_WEEKLY_GRANT]
+    assert _grants("w", "weekly", "2026-09-27T00:00:00Z", tier, epochs) == weekly
+    assert epochs["w"] == "2026-09-27T00:00:00Z"
 
 
 async def test_additional_accounts_pay_only_once_armed(tmp_path):
@@ -431,6 +506,17 @@ def test_nature_modifies_one_stat_up_and_one_down():
     assert stat_bar_scale([180, 299]) == 300 and stat_bar_scale([651, 300]) == 700
 
 
+def test_shedinja_always_has_one_hp():
+    for level in (1, 50, 100):
+        assert actual_stat("hp", 1, 31, level, "hardy", species_id=292) == 1
+        assert (
+            actual_stat("attack", 90, 20, level, "hardy", species_id=292)
+            == ((2 * 90 + 20) * level) // 100 + 5
+        )
+    # Only Shedinja is special, not every base-1 HP species.
+    assert actual_stat("hp", 1, 10, 50, None, species_id=999) == ((2 + 10) * 50) // 100 + 60
+
+
 async def test_hatching_rolls_a_profile_that_graduates_at_level_100(tmp_path):
     svc = await hatched(tmp_path)
     profile = svc.state.active.profile
@@ -461,6 +547,32 @@ def test_legacy_saves_are_migrated_with_a_backup(tmp_path):
     assert again.state.dex[0].id == store.state.dex[0].id
     assert again.state.active.profile == store.state.active.profile
     assert not migrate_profiles(again.state)
+
+
+def test_repeated_species_in_saved_chains_are_dropped_on_load(tmp_path):
+    path = tmp_path / "state.json"
+    path.write_text(
+        '{"active": {"base_id": 4, "current_id": 5, "path_ids": [4, 4, 5],'
+        ' "planned_path_ids": [4, 4, 5, 5, 6], "stage_index": 2, "total_forms": 3},'
+        ' "dex": [{"base_id": 1, "final_id": 2, "chain_order": [1, 1, 2], "rarity": "common"}]}'
+    )
+    state = StateStore(path).state
+    assert state.dex[0].chain_order == [1, 2]
+    assert state.active.path_ids == [4, 5]
+    assert state.active.planned_path_ids == [4, 5, 6]
+    assert state.active.current_id == 5 and state.active.stage_index == 1
+
+
+def test_snapshots_hide_a_disguised_dittos_shininess(tmp_path):
+    store = StateStore(tmp_path / "state.json")
+    store.state.active = MonState(
+        base_id=1, current_id=1, path_ids=[1], total_forms=3, is_shiny=True, ditto_disguise=1
+    )
+    t0 = datetime(2026, 10, 1, 12, tzinfo=UTC)
+    assert store.create_snapshot(t0).current_is_shiny is False
+    store.state.active.ditto_revealed = True
+    assert store.create_snapshot(t0 + timedelta(minutes=1)).current_is_shiny is True
+    assert [s.current_is_shiny for s in store.list_snapshots()] == [True, False]
 
 
 # ---------------------------------------------------------------- unown

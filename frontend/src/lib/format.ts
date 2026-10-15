@@ -3,9 +3,10 @@ import type { CostCoverage } from "../types";
 /** Compact token counts: 265_800_000 -> "265.8M". */
 export function tokens(n: number): string {
   const abs = Math.abs(n);
-  if (abs >= 1e9) return `${trim(n / 1e9)}B`;
-  if (abs >= 1e6) return `${trim(n / 1e6)}M`;
-  if (abs >= 1e3) return `${trim(n / 1e3)}K`;
+  // Promote where rounding would otherwise read "1000K" or "1000M".
+  if (abs >= 999_950_000) return `${trim(n / 1e9)}B`;
+  if (abs >= 999_950) return `${trim(n / 1e6)}M`;
+  if (abs >= 999.5) return `${trim(n / 1e3)}K`;
   return String(Math.round(n));
 }
 
@@ -31,9 +32,9 @@ export function costText(cost: number, coverage: CostCoverage): string {
   return usd(cost);
 }
 
-/** `50%` for whole numbers, `54.6%` otherwise. */
+/** `50%` when it rounds to a whole number (79.96 -> `80%`), `54.6%` otherwise. */
 export function percent(n: number): string {
-  return Number.isInteger(n) ? `${n}%` : `${n.toFixed(1)}%`;
+  return `${n.toFixed(1).replace(/\.0$/, "")}%`;
 }
 
 /** Rounded percent for dense readouts such as limit rows. */

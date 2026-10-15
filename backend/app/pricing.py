@@ -41,6 +41,7 @@ _SONNET_4 = ModelRate.per_million(3, 15, 3.75, 0.3)
 TABLE: dict[str, ModelRate] = {
     "claude-opus-5-5": ModelRate.per_million(4, 20, 5, 0.2),
     "claude-opus-5": _OPUS,
+    "claude-sonnet-5-5": ModelRate.per_million(2, 10, 2.5, 0.2),
     "claude-sonnet-5": ModelRate.per_million(2, 10, 2.5, 0.2),
     "claude-fable-5-1": ModelRate.per_million(10, 50, 12.5, 0.25),
     "claude-fable-5": ModelRate.per_million(10, 50, 12.5, 1.0),

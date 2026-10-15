@@ -1,6 +1,7 @@
 import { useState } from "react";
 import { spriteUrl } from "../lib/api";
 import { tokens } from "../lib/format";
+import { slugLabel } from "../lib/dex";
 import type { Rarity } from "../types";
 
 export function Sprite({
@@ -142,6 +143,53 @@ export function Price({ value, affordable }: { value: number; affordable: boolea
   return (
     <span className={`price ${affordable ? "" : "price--short"}`}>
       {tokens(value)} <span className="price__unit">tok</span>
+    </span>
+  );
+}
+
+const DEX_LINK_HINT = "View entry in collection";
+
+/**
+ * Makes a sprite open its Pokédex entry. Without a target (egg, uncaught species, `?`
+ * node) it renders a plain element, so only real links look clickable.
+ */
+export function DexLink({
+  speciesId,
+  onOpen,
+  name,
+  className = "",
+  children,
+}: {
+  /** Null unless the species is in the Pokédex. */
+  speciesId: number | null;
+  onOpen?: (speciesId: number) => void;
+  name?: string | null;
+  className?: string;
+  children: React.ReactNode;
+}) {
+  if (speciesId === null || !onOpen) return <div className={className}>{children}</div>;
+  return (
+    <button
+      type="button"
+      className={`dexLink ${className}`}
+      title={DEX_LINK_HINT}
+      aria-label={name ? `${name}, ${DEX_LINK_HINT}` : DEX_LINK_HINT}
+      onClick={() => onOpen(speciesId)}
+    >
+      {children}
+    </button>
+  );
+}
+
+/** A species' types as game-colored badges. */
+export function TypeBadges({ types, className = "" }: { types: string[]; className?: string }) {
+  return (
+    <span className={`typeBadges ${className}`}>
+      {types.map((t) => (
+        <span key={t} className={`badge badge--type badge--type-${t.toLowerCase()}`}>
+          {slugLabel(t)}
+        </span>
+      ))}
     </span>
   );
 }

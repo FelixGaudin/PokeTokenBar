@@ -80,6 +80,10 @@
 
 /* ---------------------------------------------------------------- candy */
 
+.bag__shop {
+  margin-top: 12px;
+}
+
 .candy__preview p {
   margin: 0;
   font-size: 12.5px;
@@ -90,7 +94,8 @@
   color: var(--warn-text);
 }
 
-.candy__foot {
+.candy__foot,
+.shopItem__foot {
   flex-wrap: wrap;
 }
 
@@ -144,7 +149,7 @@
   display: grid;
   grid-template-columns: 84px 1fr 48px;
   align-items: center;
-  gap: 12px;
+  gap: 2px 12px;
 }
 
 .difficulty__row label {
@@ -164,6 +169,14 @@
   font-weight: 600;
   text-align: right;
   font-variant-numeric: tabular-nums;
+}
+
+.difficulty__ends {
+  grid-column: 2;
+  display: flex;
+  justify-content: space-between;
+  font-size: 11px;
+  color: var(--text-dim);
 }
 
 .difficulty__save {
@@ -267,7 +280,7 @@
 @media (max-width: 420px) {
   .difficulty__row {
     grid-template-columns: 72px 1fr 42px;
-    gap: 8px;
+    column-gap: 8px;
   }
 }
 

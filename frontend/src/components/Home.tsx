@@ -1,6 +1,15 @@
 import "../styles/home.css";
-import { useCallback, useState } from "react";
-import { Meter, Panel, RarityBadge, ShinyBadge, Sprite } from "./Primitives";
+import { useCallback, useEffect, useState } from "react";
+import {
+  DexLink,
+  Meter,
+  Panel,
+  RarityBadge,
+  ShinyBadge,
+  Sprite,
+  TypeBadges,
+} from "./Primitives";
+import { api } from "../lib/api";
 import type { MeterTone } from "./Primitives";
 import { Recap } from "./Recap";
 import {
@@ -25,12 +34,62 @@ import {
   roundedDelta,
 } from "../lib/pace";
 import type { LimitDisplay } from "../lib/pace";
-import { axisLabel, barHeight, localDate } from "../lib/trend";
+import { axisLabel, barHeight, localDate, monthColumns } from "../lib/trend";
 import type { AccountLimitsView, DayPoint, LimitWindowView, StateView } from "../types";
 
-function CompanionCard({ state }: { state: StateView }) {
+/** "X / Y · Z%": used clamps to the total (egg usage can overshoot while a hatch retries) and the percent floors, so 100% means done. */
+function progressDetail(used: number, total: number): string {
+  const clamped = Math.min(used, total);
+  const pct = total > 0 ? Math.floor((clamped * 100) / total) : 0;
+  return `${tokens(clamped)} / ${tokens(total)} · ${pct}%`;
+}
+
+/** Growth bar that grows on a held hover and shows the exact numbers inside it. */
+function GrowthMeter({
+  value,
+  tone,
+  label,
+  detail,
+}: {
+  value: number;
+  tone: MeterTone;
+  label: string;
+  detail: string;
+}) {
+  return (
+    <div className="growthMeter">
+      <Meter value={value} tone={tone} label={`${label}: ${detail}`} />
+      <span className="growthMeter__detail" aria-hidden="true">
+        {detail}
+      </span>
+    </div>
+  );
+}
+
+function CompanionCard({
+  state,
+  onOpenDexEntry,
+}: {
+  state: StateView;
+  onOpenDexEntry: (speciesId: number) => void;
+}) {
   const { companion } = state;
   const active = companion.active;
+  const speciesId = active?.species_id ?? null;
+  // Types come from the PokéAPI details. Same id as the sprite, so a disguised Ditto
+  // shows its disguise's types.
+  const [types, setTypes] = useState<{ id: number; types: string[] } | null>(null);
+  useEffect(() => {
+    if (speciesId === null) return;
+    let cancelled = false;
+    api.pokemon(speciesId).then(
+      (data) => !cancelled && setTypes({ id: speciesId, types: data.types }),
+      () => undefined,
+    );
+    return () => {
+      cancelled = true;
+    };
+  }, [speciesId]);
   const line = statusLine(
     companion.display_state,
     companion.just_evolved_to,
@@ -55,7 +114,12 @@ function CompanionCard({ state }: { state: StateView }) {
               )}
             </div>
             <p className="companion__stage">Incubating</p>
-            <Meter value={egg.progress} label="Incubation progress" />
+            <GrowthMeter
+              value={egg.progress}
+              tone="accent"
+              label="Incubation progress"
+              detail={progressDetail(egg.usage, egg.threshold)}
+            />
             {egg.hatch_delayed ? (
               <p className="companion__hint home__delayed">
                 ⏳ Hatching is delayed — retrying on the next refresh
@@ -79,6 +143,8 @@ function CompanionCard({ state }: { state: StateView }) {
     );
   }
 
+  const dexLink = (speciesId: number) =>
+    state.collection.pokedex.some((s) => s.species_id === speciesId) ? speciesId : null;
   const stageLabel = active.is_final
     ? "Final form"
     : `Stage ${active.stage_index + 1} of ${active.total_forms}`;
@@ -88,13 +154,20 @@ function CompanionCard({ state }: { state: StateView }) {
     <Panel className={`companion companion--${companion.display_state}`}>
       <div className="companion__body">
         <div className="companion__art">
-          <Sprite
-            speciesId={active.species_id}
-            shiny={active.is_shiny}
-            form={active.unown_form}
-            size={120}
-            alt={active.name}
-          />
+          <DexLink
+            speciesId={dexLink(active.species_id)}
+            onOpen={onOpenDexEntry}
+            name={active.name}
+            className="companion__link"
+          >
+            <Sprite
+              speciesId={active.species_id}
+              shiny={active.is_shiny}
+              form={active.unown_form}
+              size={120}
+              alt={active.name}
+            />
+          </DexLink>
         </div>
         <div className="companion__info">
           <div className="companion__nameRow">
@@ -104,16 +177,20 @@ function CompanionCard({ state }: { state: StateView }) {
             {active.is_shiny && <ShinyBadge />}
             {active.nature_label && <span className="nature">{active.nature_label}</span>}
           </div>
+          {types?.id === active.species_id && types.types.length > 0 && (
+            <TypeBadges types={types.types} className="home__types" />
+          )}
           <p className="companion__stage">
             {stageLabel}
             {active.growth_multiplier ? (
               <span className="home__boost">{active.growth_multiplier}× growth</span>
             ) : null}
           </p>
-          <Meter
+          <GrowthMeter
             value={active.progress}
             tone={active.is_final ? "gold" : "accent"}
             label="Growth progress"
+            detail={progressDetail(active.used_at_stage, active.threshold)}
           />
           <p className="companion__hint">
             <strong>{tokens(active.tokens_to_next)}</strong> {goalLabel}
@@ -136,7 +213,10 @@ function CompanionCard({ state }: { state: StateView }) {
           {active.chain.map((slot, index) => (
             <div key={index} className="chain__item">
               {index > 0 && <span className="chain__arrow" aria-hidden="true">→</span>}
-              <div
+              <DexLink
+                speciesId={slot.species_id === null ? null : dexLink(slot.species_id)}
+                onOpen={onOpenDexEntry}
+                name={slot.name}
                 className={`chain__slot ${slot.is_current ? "chain__slot--current" : ""} ${
                   slot.mystery ? "chain__slot--mystery" : ""
                 }`}
@@ -154,7 +234,7 @@ function CompanionCard({ state }: { state: StateView }) {
                   <span className="chain__unknown" aria-hidden="true">?</span>
                 )}
                 <span className="chain__name">{slot.name ?? "???"}</span>
-              </div>
+              </DexLink>
             </div>
           ))}
         </div>
@@ -172,15 +252,17 @@ function dayStamp(key: string): string {
 }
 
 function MonthTrend({ days, todayKey }: { days: DayPoint[]; todayKey: string }) {
-  const [hover, setHover] = useState<number | null>(null);
-  const peak = Math.max(0, ...days.map((d) => d.total_tokens));
-  if (days.length === 0 || peak <= 0) return null;
+  const [hover, setHover] = useState<string | null>(null);
+  const columns = monthColumns(days, todayKey);
+  const peak = Math.max(0, ...columns.map((c) => c.point.total_tokens));
+  if (columns.length === 0 || peak <= 0) return null;
 
-  const foundToday = days.findIndex((d) => d.date === todayKey);
-  const todayIndex = foundToday >= 0 ? foundToday : days.length - 1;
-  const todayDay = localDate(days[todayIndex].date).getDate();
-  // The month can shrink under a held hover (at midnight on the 1st).
-  const shown = days[hover !== null && hover < days.length ? hover : todayIndex];
+  const todayColumn = columns.find((c) => c.point.date === todayKey) ?? columns[columns.length - 1];
+  const todayDay = localDate(todayColumn.point.date).getDate();
+  // The month can change under a held hover (at midnight on the last day).
+  const shown = (columns.find((c) => c.point.date === hover) ?? todayColumn).point;
+  // With a single day of usage the peak would repeat the readout.
+  const showsPeak = columns.filter((c) => c.point.total_tokens > 0).length > 1;
 
   return (
     <div className="trend" onMouseLeave={() => setHover(null)}>
@@ -190,38 +272,46 @@ function MonthTrend({ days, todayKey }: { days: DayPoint[]; todayKey: string }) 
           {dayStamp(shown.date)} {tokens(shown.total_tokens)}{" "}
           {costText(shown.cost, shown.cost_coverage)}
         </span>
-        <span className="trend__peak">
-          Peak <strong>{tokens(peak)}</strong>
-        </span>
+        {showsPeak && (
+          <span className="trend__peak">
+            Peak <strong>{tokens(peak)}</strong>
+          </span>
+        )}
       </div>
-      <div className="trend__grid" style={{ gridTemplateColumns: `repeat(${days.length}, 1fr)` }}>
-        {days.map((d, i) => {
+      <div
+        className="trend__grid"
+        style={{ gridTemplateColumns: `repeat(${columns.length}, 1fr)` }}
+      >
+        {columns.map(({ point: d, isFuture }) => {
           const date = localDate(d.date);
           const weekday = date.getDay();
           const label = axisLabel(date.getDate(), todayDay);
-          const isToday = i === todayIndex;
+          const isToday = d.date === todayColumn.point.date;
+          const axisClass = isToday ? "trend__axis--today" : isFuture ? "trend__axis--future" : "";
           return (
             <div
               key={d.date}
               className="trend__col"
-              onMouseEnter={() => setHover(i)}
-              role="img"
-              aria-label={`${dayStamp(d.date)}, ${exact(d.total_tokens)} tokens`}
+              onMouseEnter={isFuture ? undefined : () => setHover(d.date)}
+              role={isFuture ? undefined : "img"}
+              aria-label={isFuture ? undefined : `${dayStamp(d.date)}, ${exact(d.total_tokens)} tokens`}
             >
               <span className="trend__track">
-                <span
-                  className={`trend__bar ${isToday ? "trend__bar--today" : ""} ${
-                    d.total_tokens <= 0 ? "trend__bar--zero" : ""
-                  }`}
-                  style={{ height: `${barHeight(d.total_tokens, peak)}px` }}
-                />
+                {!isFuture && (
+                  <span
+                    className={`trend__bar ${isToday ? "trend__bar--today" : ""} ${
+                      d.total_tokens <= 0 ? "trend__bar--zero" : ""
+                    }`}
+                    style={{ height: `${barHeight(d.total_tokens, peak)}px` }}
+                  />
+                )}
               </span>
               <span
-                className={`trend__weekend ${weekday === 0 || weekday === 6 ? "is-weekend" : ""}`}
+                className={`trend__weekend ${
+                  !isFuture && (weekday === 0 || weekday === 6) ? "is-weekend" : ""
+                }`}
               />
-              <span className={`trend__axis ${isToday ? "trend__axis--today" : ""}`}>
-                {label ?? ""}
-              </span>
+              <span className={`trend__axis ${axisClass}`}>{label ?? ""}</span>
             </div>
           );
         })}
@@ -250,7 +340,9 @@ function TokenStats({ state, onRecap }: { state: StateView; onRecap: () => void 
     <Panel title="Today's tokens" aside={<span className="dim">{usage.today_date}</span>}>
       <div className="headline">
         <span className="headline__value">{tokens(provider.total_tokens)}</span>
-        <span className="headline__exact">{exact(provider.total_tokens)}</span>
+        {provider.total_tokens >= 1_000 && (
+          <span className="headline__exact">{exact(provider.total_tokens)}</span>
+        )}
         <span className="headline__cost">{costText(provider.cost, provider.cost_coverage)}</span>
       </div>
 
@@ -515,7 +607,13 @@ function LocalBlock({ state }: { state: StateView }) {
   );
 }
 
-export function Home({ state }: { state: StateView }) {
+export function Home({
+  state,
+  onOpenDexEntry,
+}: {
+  state: StateView;
+  onOpenDexEntry: (speciesId: number) => void;
+}) {
   const [view, setView] = useState<"home" | "recap">("home");
   const back = useCallback(() => setView("home"), []);
 
@@ -523,7 +621,7 @@ export function Home({ state }: { state: StateView }) {
 
   return (
     <div className="stack">
-      <CompanionCard state={state} />
+      <CompanionCard state={state} onOpenDexEntry={onOpenDexEntry} />
       <TokenStats state={state} onRecap={() => setView("recap")} />
       <Limits state={state} />
     </div>

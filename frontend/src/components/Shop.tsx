@@ -2,7 +2,7 @@ import { useState } from "react";
 import { itemSpriteUrl } from "../lib/api";
 import { exact, tokens } from "../lib/format";
 import { Panel, Price } from "./Primitives";
-import type { ActiveView, Rarity, ShopEggView, StateView } from "../types";
+import type { ActiveView, Rarity, ShopEggView, ShopItemView, StateView } from "../types";
 
 function ItemIcon({ spriteName, emoji }: { spriteName: string | null; emoji: string }) {
   if (!spriteName) {
@@ -39,7 +39,7 @@ export function Shop({
 }: {
   state: StateView;
   busy: boolean;
-  onBuyItem: (kind: string) => void;
+  onBuyItem: (kind: string, count: number) => void;
   onBuyEgg: (tier: Rarity | null) => void;
 }) {
   const { shop, wallet, companion } = state;
@@ -71,26 +71,12 @@ export function Shop({
       <Panel title="Items">
         <div className="cards">
           {shop.items.map((item) => (
-            <article key={item.kind} className="card">
-              <div className="card__head">
-                <ItemIcon spriteName={item.sprite_name} emoji={item.emoji} />
-                <div>
-                  <h3 className="card__title">{item.label}</h3>
-                  {item.passive && <span className="tag">Held item</span>}
-                </div>
-              </div>
-              <p className="card__desc">{item.description}</p>
-              <div className="card__foot">
-                <Price value={item.price} affordable={item.affordable} />
-                <button
-                  className="btn btn--primary"
-                  disabled={busy || item.owned || !item.affordable}
-                  onClick={() => onBuyItem(item.kind)}
-                >
-                  {item.owned ? "Owned" : item.affordable ? "Buy" : "Not enough"}
-                </button>
-              </div>
-            </article>
+            <ItemCard
+              key={item.kind}
+              item={item}
+              busy={busy}
+              onBuy={(count) => onBuyItem(item.kind, count)}
+            />
           ))}
         </div>
       </Panel>
@@ -114,6 +100,71 @@ export function Shop({
         </div>
       </Panel>
     </div>
+  );
+}
+
+function ItemCard({
+  item,
+  busy,
+  onBuy,
+}: {
+  item: ShopItemView;
+  busy: boolean;
+  onBuy: (count: number) => void;
+}) {
+  const max = Math.max(1, item.max_count);
+  const [selected, setSelected] = useState(1);
+  // The wallet moves under the card; keep the choice inside what it can pay for.
+  const n = Math.min(Math.max(1, selected), max);
+  const showsQuantity = !item.passive && item.max_count > 1;
+
+  function buy() {
+    onBuy(n);
+    setSelected(1);
+  }
+
+  return (
+    <article className="card">
+      <div className="card__head">
+        <ItemIcon spriteName={item.sprite_name} emoji={item.emoji} />
+        <div>
+          <h3 className="card__title">{item.label}</h3>
+          {item.passive && <span className="tag">Held item</span>}
+        </div>
+      </div>
+      <p className="card__desc">{item.description}</p>
+      <div className="card__foot shopItem__foot">
+        <Price value={item.price * n} affordable={item.affordable} />
+        {showsQuantity && (
+          <div className="stepper" role="group" aria-label={`${item.label} quantity`}>
+            <button
+              className="stepper__btn"
+              aria-label="One fewer"
+              disabled={n <= 1}
+              onClick={() => setSelected(n - 1)}
+            >
+              −
+            </button>
+            <span className="stepper__value">×{n}</span>
+            <button
+              className="stepper__btn"
+              aria-label="One more"
+              disabled={n >= max}
+              onClick={() => setSelected(n + 1)}
+            >
+              +
+            </button>
+          </div>
+        )}
+        <button
+          className="btn btn--primary"
+          disabled={busy || item.owned || !item.affordable}
+          onClick={buy}
+        >
+          {item.owned ? "Owned" : !item.affordable ? "Not enough" : n > 1 ? `Buy ×${n}` : "Buy"}
+        </button>
+      </div>
+    </article>
   );
 }
 

@@ -257,10 +257,16 @@ def nature_multiplier(nature: str | None, stat: str) -> float:
     return 1.0
 
 
-def actual_stat(stat: str, base: int, iv: int, level: int, nature: str | None) -> int:
+# Main-series rule: Shedinja always has exactly 1 HP, whatever its level and IVs.
+SHEDINJA_SPECIES_ID = 292
+
+
+def actual_stat(
+    stat: str, base: int, iv: int, level: int, nature: str | None, *, species_id: int | None = None
+) -> int:
     core = ((2 * base + iv) * level) // 100
     if stat == "hp":
-        return core + level + 10
+        return 1 if species_id == SHEDINJA_SPECIES_ID else core + level + 10
     return math.floor((core + 5) * nature_multiplier(nature, stat))
 
 

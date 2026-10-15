@@ -36,6 +36,8 @@ function DifficultyRow({
   value,
   lo,
   hi,
+  low,
+  high,
   disabled,
   onChange,
 }: {
@@ -44,6 +46,9 @@ function DifficultyRow({
   value: number;
   lo: number;
   hi: number;
+  /** What each end of the slider means, e.g. Easy / Hard. */
+  low: string;
+  high: string;
   disabled: boolean;
   onChange: (v: number) => void;
 }) {
@@ -57,10 +62,15 @@ function DifficultyRow({
         max={1}
         step="any"
         disabled={disabled}
+        aria-describedby={`${id}-ends`}
         value={difficultyPosition(value, lo, hi)}
         onChange={(e) => onChange(difficultyAt(Number(e.target.value), lo, hi))}
       />
       <span className="difficulty__value">{Math.round(value * 100)}%</span>
+      <span className="difficulty__ends" id={`${id}-ends`}>
+        <span>{low}</span>
+        <span>{high}</span>
+      </span>
     </div>
   );
 }
@@ -242,6 +252,8 @@ export function Settings({
             value={draft.growth}
             lo={lo}
             hi={hi}
+            low="Easy"
+            high="Hard"
             disabled={busy}
             onChange={(growth) => setDraft((d) => ({ ...d, growth }))}
           />
@@ -251,14 +263,12 @@ export function Settings({
             value={draft.shop}
             lo={lo}
             hi={hi}
+            low="Cheap"
+            high="Expensive"
             disabled={busy}
             onChange={(shop) => setDraft((d) => ({ ...d, shop }))}
           />
         </div>
-        <p className="note">
-          {Math.round(lo * 100)}%–{Math.round(hi * 100)}% · Percentages of the default
-          balance — lower grows faster and costs less, higher does the opposite
-        </p>
         {draftDirty && (
           <div className="row difficulty__save">
             <button

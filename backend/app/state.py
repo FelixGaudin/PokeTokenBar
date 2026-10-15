@@ -200,6 +200,11 @@ def sanitize(state: SaveState) -> None:
     if state.active is not None:
         a = state.active
         a.unown_form = B.resolve_unown_form(a.base_id, a.unown_form)
+        # A hand-edited chain can repeat a species; keep its first appearance only.
+        a.path_ids = _deduped(a.path_ids)
+        a.planned_path_ids = _deduped(a.planned_path_ids)
+        if a.current_id in a.path_ids:
+            a.stage_index = a.path_ids.index(a.current_id)
         if state.active.profile is not None:
             state.active.profile.sanitize()
     for entry in state.dex:
@@ -209,8 +214,13 @@ def sanitize(state: SaveState) -> None:
         if entry.released_at is not None and entry.released_at.tzinfo is None:
             entry.released_at = entry.released_at.replace(tzinfo=timezone.utc)
         entry.unown_form = B.resolve_unown_form(entry.base_id, entry.unown_form)
+        entry.chain_order = _deduped(entry.chain_order)
         if entry.profile is not None:
             entry.profile.sanitize()
+
+
+def _deduped(ids: list[int]) -> list[int]:
+    return list(dict.fromkeys(ids))
 
 
 def parse_save(raw: Any) -> SaveState:
@@ -264,6 +274,7 @@ class StateStore:
             log.error("save at %s is corrupt (%s)", self.path, exc)
             return self._recover()
 
+        sanitize(state)
         if migrate_profiles(state):
             # One copy of the pre-migration save, never overwritten.
             backup = self.path.with_name(self.path.stem + ".pre-profiles-v1.json")

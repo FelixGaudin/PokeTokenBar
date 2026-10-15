@@ -372,6 +372,57 @@ async def test_wallet_is_lifetime_usage_minus_spend(tmp_path):
     assert svc.item_count(ItemKind.RARE_CANDY) == 1
 
 
+async def test_max_buy_count_is_the_wallet_over_the_price(tmp_path):
+    svc = make_service(tmp_path, {1: three_stage_line()})
+    svc.state.used_since_install = 1_200_000_000
+    assert svc.max_buy_count(ItemKind.RARE_CANDY) == 2
+    assert svc.max_buy_count(ItemKind.MINT) == 12
+    svc.state.used_since_install = B.RARE_CANDY_PRICE - 1
+    assert svc.max_buy_count(ItemKind.RARE_CANDY) == 0
+
+
+async def test_a_passive_item_is_capped_at_one(tmp_path):
+    svc = make_service(tmp_path, {1: three_stage_line()})
+    svc.state.used_since_install = 10 * B.SHINY_CHARM_PRICE
+    assert svc.max_buy_count(ItemKind.SHINY_CHARM) == 1
+    with pytest.raises(ValueError):
+        svc.buy_item(ItemKind.SHINY_CHARM, 2)
+    assert svc.state.spent_tokens == 0
+    svc.buy_item(ItemKind.SHINY_CHARM)
+    assert svc.max_buy_count(ItemKind.SHINY_CHARM) == 0
+
+
+async def test_buying_several_debits_the_total_and_persists(tmp_path):
+    svc = make_service(tmp_path, {1: three_stage_line()})
+    svc.state.used_since_install = 2_000_000_000
+    svc.state.inventory[ItemKind.RARE_CANDY.value] = 1
+    svc.buy_item(ItemKind.RARE_CANDY, 3)
+    assert svc.item_count(ItemKind.RARE_CANDY) == 4
+    assert svc.state.spent_tokens == 3 * B.RARE_CANDY_PRICE
+    assert svc.state.used_since_install == 2_000_000_000
+    again = make_service(tmp_path, {1: three_stage_line()})
+    assert again.item_count(ItemKind.RARE_CANDY) == 4
+    assert again.state.spent_tokens == 3 * B.RARE_CANDY_PRICE
+
+
+async def test_buying_exactly_the_max_empties_the_wallet(tmp_path):
+    svc = make_service(tmp_path, {1: three_stage_line()})
+    svc.state.used_since_install = 3 * B.RARE_CANDY_PRICE
+    svc.buy_item(ItemKind.RARE_CANDY, svc.max_buy_count(ItemKind.RARE_CANDY))
+    assert svc.item_count(ItemKind.RARE_CANDY) == 3
+    assert svc.available_tokens == 0
+
+
+async def test_an_unaffordable_or_non_positive_count_buys_nothing(tmp_path):
+    svc = make_service(tmp_path, {1: three_stage_line()})
+    svc.state.used_since_install = 1_200_000_000
+    for bad in (3, 0, -1):
+        with pytest.raises(ValueError):
+            svc.buy_item(ItemKind.RARE_CANDY, bad)
+    assert svc.item_count(ItemKind.RARE_CANDY) == 0
+    assert svc.state.spent_tokens == 0
+
+
 async def test_buying_cannot_go_into_debt(tmp_path):
     svc = make_service(tmp_path, {1: three_stage_line()})
     svc.state.used_since_install = 10

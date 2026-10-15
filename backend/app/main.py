@@ -102,11 +102,13 @@ async def buy_item(body: BuyItemRequest) -> ActionResult:
     except ValueError:
         raise HTTPException(status_code=400, detail=f"unknown item: {body.kind}") from None
     try:
-        runtime.companion.buy_item(kind)
+        runtime.companion.buy_item(kind, body.count)
     except ValueError as exc:
         raise HTTPException(status_code=409, detail=str(exc)) from None
     labels = {"rareCandy": "Rare Candy", "mint": "Mint", "shinyCharm": "Shiny Charm"}
-    return ActionResult(ok=True, message=f"Bought a {labels[kind.value]}")
+    if body.count == 1:
+        return ActionResult(ok=True, message=f"Bought a {labels[kind.value]}")
+    return ActionResult(ok=True, message=f"Bought {labels[kind.value]} ×{body.count}")
 
 
 @app.post("/api/shop/egg", response_model=ActionResult)

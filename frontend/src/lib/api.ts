@@ -29,10 +29,10 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
 export const api = {
   state: () => request<StateView>("/api/state"),
   refresh: () => request<StateView>("/api/refresh", { method: "POST" }),
-  buyItem: (kind: string) =>
+  buyItem: (kind: string, count = 1) =>
     request<{ ok: boolean; message: string | null }>("/api/shop/item", {
       method: "POST",
-      body: JSON.stringify({ kind }),
+      body: JSON.stringify({ kind, count }),
     }),
   buyEgg: (tier: Rarity | null) =>
     request<{ ok: boolean; message: string | null }>("/api/shop/egg", {

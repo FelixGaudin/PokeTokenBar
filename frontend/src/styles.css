@@ -347,6 +347,14 @@ code {
   border-radius: var(--radius);
 }
 
+.companion__link {
+  display: grid;
+  place-items: center;
+  width: 100%;
+  height: 100%;
+  border-radius: inherit;
+}
+
 .companion__art--egg {
   font-size: 60px;
   animation: wobble 3s ease-in-out infinite;
@@ -446,6 +454,73 @@ code {
   color: var(--shiny);
 }
 
+.typeBadges {
+  display: inline-flex;
+  flex-wrap: wrap;
+  gap: 5px;
+}
+
+/* Classic main-series type-chart colors; a type outside the 18 stays gray. */
+.badge--type {
+  background: #8a8a92;
+  color: #fff;
+  text-shadow: 0 0.5px 0.5px rgb(0 0 0 / 35%);
+}
+.badge--type-normal {
+  background: #aaaa99;
+}
+.badge--type-fire {
+  background: #ff4422;
+}
+.badge--type-water {
+  background: #3399ff;
+}
+.badge--type-electric {
+  background: #ffcc33;
+}
+.badge--type-grass {
+  background: #77cc55;
+}
+.badge--type-ice {
+  background: #66ccff;
+}
+.badge--type-fighting {
+  background: #bb5544;
+}
+.badge--type-poison {
+  background: #aa5599;
+}
+.badge--type-ground {
+  background: #ddbb55;
+}
+.badge--type-flying {
+  background: #8899ff;
+}
+.badge--type-psychic {
+  background: #ff5599;
+}
+.badge--type-bug {
+  background: #aabb22;
+}
+.badge--type-rock {
+  background: #bbaa66;
+}
+.badge--type-ghost {
+  background: #6666bb;
+}
+.badge--type-dragon {
+  background: #7766ee;
+}
+.badge--type-dark {
+  background: #775544;
+}
+.badge--type-steel {
+  background: #aaaabb;
+}
+.badge--type-fairy {
+  background: #ee99ee;
+}
+
 .nature {
   font-size: 12px;
   color: var(--text-dim);
@@ -513,6 +588,22 @@ code {
 }
 .meter--crit .meter__fill {
   background: var(--crit);
+}
+
+/* ---------------------------------------------------------------- dex links */
+
+/* Before the slots it wraps, so their own border, padding and background win. */
+.dexLink {
+  padding: 0;
+  border: 0;
+  background: transparent;
+  text-align: inherit;
+  cursor: pointer;
+  transition: background 0.12s ease-out;
+}
+
+.dexLink:hover {
+  background: color-mix(in srgb, var(--text) 10%, transparent);
 }
 
 /* ---------------------------------------------------------------- chain */
@@ -1208,6 +1299,7 @@ code {
   }
 
   .companion__nameRow,
+  .home__types,
   .chain {
     justify-content: center;
   }

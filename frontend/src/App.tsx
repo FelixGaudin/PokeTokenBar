@@ -41,7 +41,10 @@ const EVENT_COPY: Record<CompanionEvent["kind"], (e: CompanionEvent) => string> 
 export default function App() {
   const [state, setState] = useState<StateView | null>(null);
   const [error, setError] = useState<string | null>(null);
-  const [tab, setTab] = useState<Tab>("Home");
+  const [tab, setTabState] = useState<Tab>("Home");
+  // The Collection tab's open Pokédex entry. It lives here so Home sprites can open it;
+  // leaving the tab drops it.
+  const [dexEntry, setDexEntry] = useState<number | null>(null);
   const [busy, setBusy] = useState(false);
   const [toasts, setToasts] = useState<Toast[]>([]);
   const [celebration, setCelebration] = useState<CompanionEvent | null>(null);
@@ -103,6 +106,16 @@ export default function App() {
     const timer = window.setTimeout(() => setCelebration(null), 5000);
     return () => window.clearTimeout(timer);
   }, [celebration]);
+
+  const setTab = useCallback((next: Tab) => {
+    setTabState(next);
+    setDexEntry(null);
+  }, []);
+
+  const openDexEntry = useCallback((speciesId: number) => {
+    setTabState("Collection");
+    setDexEntry(speciesId);
+  }, []);
 
   const act = useCallback(
     async (fn: () => Promise<{ message: string | null }>) => {
@@ -199,12 +212,12 @@ export default function App() {
       )}
 
       <main className="content">
-        {tab === "Home" && <Home state={state} />}
+        {tab === "Home" && <Home state={state} onOpenDexEntry={openDexEntry} />}
         {tab === "Shop" && (
           <Shop
             state={state}
             busy={busy}
-            onBuyItem={(kind) => void act(() => api.buyItem(kind))}
+            onBuyItem={(kind, count) => void act(() => api.buyItem(kind, count))}
             onBuyEgg={(tier: Rarity | null) => void act(() => api.buyEgg(tier))}
           />
         )}
@@ -214,9 +227,12 @@ export default function App() {
             busy={busy}
             onUseCandy={(count) => void act(() => api.useCandy(count))}
             onUseMint={() => void act(() => api.useMint())}
+            onShop={() => setTab("Shop")}
           />
         )}
-        {tab === "Collection" && <Collection state={state} />}
+        {tab === "Collection" && (
+          <Collection state={state} openId={dexEntry} onOpen={setDexEntry} />
+        )}
         {tab === "Settings" && (
           <Settings
             state={state}

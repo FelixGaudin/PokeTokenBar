@@ -9,7 +9,7 @@ import {
   slugLabel,
   unownSymbol,
 } from "../lib/dex";
-import { Meter, Sprite } from "./Primitives";
+import { Meter, Sprite, TypeBadges } from "./Primitives";
 import type {
   DexEntryView,
   DexSpeciesView,
@@ -157,8 +157,11 @@ export function PokemonDetail({
           />
         </span>
         <div className="pd__who">
-          <h2 className="pd__name">{name}</h2>
-          <span className={`pd__rarity pd__rarity--${rarity}`}>{titleCase(rarity)}</span>
+          <div className="pd__nameRow">
+            <h2 className="pd__name">{name}</h2>
+            <span className={`pd__rarity pd__rarity--${rarity}`}>{titleCase(rarity)}</span>
+          </div>
+          {data && data.types.length > 0 && <TypeBadges types={data.types} className="pd__types" />}
           {displayedShiny && <span className="pd__shiny">✨ Shiny</span>}
           {individual?.is_active && <span className="pd__raising">Raising</span>}
         </div>
@@ -239,7 +242,7 @@ function DetailBody({
 }) {
   return (
     <>
-      {individuals.length > 0 ? (
+      {individuals.length > 1 && (
         <label className="pd__picker">
           <span>Individual</span>
           <select value={individual?.id ?? ""} onChange={(e) => onSelect(e.target.value)}>
@@ -250,7 +253,8 @@ function DetailBody({
             ))}
           </select>
         </label>
-      ) : (
+      )}
+      {individuals.length === 0 && (
         <p className="pd__reference">Collected appearance · species reference</p>
       )}
 
@@ -303,13 +307,6 @@ function DetailBody({
 
       <div className="pd__card">
         <h3 className="pd__title">Species data</h3>
-        <div className="pd__types">
-          {data.types.map((t) => (
-            <span key={t} className="pd__type">
-              {slugLabel(t)}
-            </span>
-          ))}
-        </div>
         <div className="pd__pairs">
           <Pair label="Height" value={`${data.height_m.toFixed(1)} m`} />
           <Pair label="Weight" value={`${data.weight_kg.toFixed(1)} kg`} />

@@ -11,6 +11,12 @@ const SCOPES: { value: RecapScope; label: string }[] = [
   { value: "year", label: "Year" },
 ];
 
+const CURRENT_PERIOD: Record<RecapScope, string> = {
+  week: "This week",
+  month: "This month",
+  year: "This year",
+};
+
 const SEGMENTS = 8;
 const MONTH_LABEL_DAYS = new Set([1, 8, 15, 22, 29]);
 
@@ -84,6 +90,9 @@ function RecapCard({ recap, state }: { recap: RecapView; state: StateView }) {
           {recap.buckets.map((b) => {
             const lit = litSegments(b.tokens, peak);
             const label = bucketLabel(recap.scope, b.key);
+            const readout = `${bucketName(recap.scope, b.key)}, ${
+              b.has_data ? exact(b.tokens) : "no data"
+            }`;
             return (
               <div
                 key={b.key}
@@ -91,9 +100,8 @@ function RecapCard({ recap, state }: { recap: RecapView; state: StateView }) {
                   b.has_data ? "dexMeter--data" : ""
                 }`}
                 role="img"
-                aria-label={`${bucketName(recap.scope, b.key)}, ${
-                  b.has_data ? exact(b.tokens) : "no data"
-                }`}
+                aria-label={readout}
+                title={readout}
               >
                 <div className="dexMeter__stack">
                   {Array.from({ length: SEGMENTS }, (_, i) => (
@@ -245,6 +253,14 @@ export function Recap({ state, onBack }: { state: StateView; onBack: () => void 
           onClick={() => setOffset((o) => o - 1)}
         >
           ◀ Previous
+        </button>
+        <button
+          type="button"
+          className="recap__navBtn"
+          disabled={offset === 0}
+          onClick={() => setOffset(0)}
+        >
+          {CURRENT_PERIOD[scope]}
         </button>
         <button
           type="button"

@@ -15,7 +15,7 @@ import {
   type DexSort,
   type LogSort,
 } from "../lib/dex";
-import { Panel, RarityBadge, ShinyBadge, Sprite } from "./Primitives";
+import { DexLink, Panel, RarityBadge, ShinyBadge, Sprite } from "./Primitives";
 import { PokemonDetail } from "./PokemonDetail";
 import type { DexEntryView, DexSpeciesView, Rarity, StateView, UnownFormView } from "../types";
 
@@ -24,7 +24,16 @@ const PAGE_SIZE = 16;
 
 type Tab = "pokedex" | "log";
 
-export function Collection({ state }: { state: StateView }) {
+export function Collection({
+  state,
+  openId,
+  onOpen,
+}: {
+  state: StateView;
+  /** The open Pokédex entry (species number), or null for the grid / log. */
+  openId: number | null;
+  onOpen: (speciesId: number | null) => void;
+}) {
   const { collection } = state;
   const lang = state.meta.language;
   const [tab, setTab] = useState<Tab>("pokedex");
@@ -33,7 +42,6 @@ export function Collection({ state }: { state: StateView }) {
   const [rarity, setRarity] = useState<Rarity | null>(null);
   const [dexSort, setDexSort] = useState<DexSort>(DEX_SORT_DEFAULT);
   const [logSort, setLogSort] = useState<LogSort>(LOG_SORT_DEFAULT);
-  const [openId, setOpenId] = useState<number | null>(null);
 
   // The page resets to 0 whenever a filter, the search or the sort changes.
   const dexKey = `${query}|${shinyOnly}|${rarity}|${dexSort}`;
@@ -63,7 +71,7 @@ export function Collection({ state }: { state: StateView }) {
 
   const switchTab = (next: Tab) => {
     setTab(next);
-    setOpenId(null);
+    onOpen(null);
   };
 
   const segmented = (
@@ -98,7 +106,7 @@ export function Collection({ state }: { state: StateView }) {
           unownForms={collection.unown_forms}
           entries={collection.catch_log}
           language={lang}
-          onBack={() => setOpenId(null)}
+          onBack={() => onOpen(null)}
         />
       </div>
     );
@@ -236,19 +244,19 @@ export function Collection({ state }: { state: StateView }) {
             noResults
           ) : (
             <>
-              <div className="collGrid">
+              <WheelPagedGrid page={page} pages={pages} onPage={setPage}>
                 {slice.map((s) => (
                   <DexCell
                     key={s.species_id}
                     species={s}
                     unownForms={collection.unown_forms}
-                    onOpen={() => setOpenId(s.species_id)}
+                    onOpen={() => onOpen(s.species_id)}
                   />
                 ))}
                 {Array.from({ length: fillers }, (_, i) => (
                   <span key={`filler-${i}`} className="collCell collCell--filler" aria-hidden="true" />
                 ))}
-              </div>
+              </WheelPagedGrid>
               {pages > 1 && (
                 <nav className="collPager">
                   <button
@@ -280,6 +288,7 @@ export function Collection({ state }: { state: StateView }) {
   }
 
   const log = sortEntries(filterEntries(collection.catch_log, filters), logSort, lang);
+  const dexIds = new Set(collection.pokedex.map((s) => s.species_id));
   return (
     <div className="stack">
       <Panel>
@@ -297,12 +306,78 @@ export function Collection({ state }: { state: StateView }) {
           ) : (
             <div className="collLog">
               {log.map((entry) => (
-                <LogRow key={entry.id} entry={entry} />
+                <LogRow key={entry.id} entry={entry} dexIds={dexIds} onOpen={onOpen} />
               ))}
             </div>
           )}
         </Panel>
       </div>
+    </div>
+  );
+}
+
+/** Wheel distance (px) a gesture needs before it flips the page. */
+const WHEEL_THRESHOLD = 24;
+/** A pause this long (ms) ends a wheel gesture, momentum tail included. */
+const WHEEL_GESTURE_GAP = 200;
+
+/**
+ * The Pokédex grid, paged by the scroll wheel: one page per gesture, its momentum tail
+ * ignored. At the first or last page the wheel scrolls the page as usual.
+ */
+function WheelPagedGrid({
+  page,
+  pages,
+  onPage,
+  children,
+}: {
+  page: number;
+  pages: number;
+  onPage: (page: number) => void;
+  children: React.ReactNode;
+}) {
+  const ref = useRef<HTMLDivElement>(null);
+  const latest = useRef({ page, pages, onPage });
+  useEffect(() => {
+    latest.current = { page, pages, onPage };
+  });
+
+  useEffect(() => {
+    const el = ref.current;
+    if (!el) return;
+    let accumulated = 0;
+    let fired = false;
+    let lastEvent = 0;
+    const onWheel = (e: WheelEvent) => {
+      const { page: current, pages: count, onPage: go } = latest.current;
+      if (e.timeStamp - lastEvent > WHEEL_GESTURE_GAP) {
+        accumulated = 0;
+        fired = false;
+      }
+      // The rest of a gesture that already paged, momentum included, stays here.
+      if (fired) {
+        e.preventDefault();
+        lastEvent = e.timeStamp;
+        return;
+      }
+      const step = e.deltaY > 0 ? 1 : e.deltaY < 0 ? -1 : 0;
+      const next = current + step;
+      if (step === 0 || next < 0 || next >= count) return;
+      e.preventDefault();
+      lastEvent = e.timeStamp;
+      // Lines (Firefox) and pages count as one full notch each.
+      accumulated += e.deltaMode === 0 ? e.deltaY : step * WHEEL_THRESHOLD;
+      if (Math.abs(accumulated) < WHEEL_THRESHOLD) return;
+      fired = true;
+      go(next);
+    };
+    el.addEventListener("wheel", onWheel, { passive: false });
+    return () => el.removeEventListener("wheel", onWheel);
+  }, []);
+
+  return (
+    <div className="collGrid" ref={ref}>
+      {children}
     </div>
   );
 }
@@ -318,7 +393,7 @@ function DexCell({
 }) {
   const isUnown = species.species_id === UNOWN_ID;
   const form: UnownFormView | undefined = isUnown ? unownForms[0] : undefined;
-  const shiny = form ? !form.has_normal : !species.has_normal;
+  const shiny = form ? !form.has_normal : species.is_shiny;
   const caption = isUnown ? `${species.name} ${unownForms.length}/28` : species.name;
   const tooltip = [
     `#${species.species_id} ${species.name}`,
@@ -355,7 +430,15 @@ function DexCell({
   );
 }
 
-function LogRow({ entry }: { entry: DexEntryView }) {
+function LogRow({
+  entry,
+  dexIds,
+  onOpen,
+}: {
+  entry: DexEntryView;
+  dexIds: Set<number>;
+  onOpen: (speciesId: number) => void;
+}) {
   return (
     <article className="collRow">
       <header className="collRow__head">
@@ -375,7 +458,12 @@ function LogRow({ entry }: { entry: DexEntryView }) {
                 →
               </span>
             )}
-            <div className="collRow__slot">
+            <DexLink
+              speciesId={dexIds.has(sp.species_id) ? sp.species_id : null}
+              onOpen={onOpen}
+              name={sp.name}
+              className="collRow__slot"
+            >
               <Sprite
                 speciesId={sp.species_id}
                 shiny={entry.is_shiny}
@@ -385,7 +473,7 @@ function LogRow({ entry }: { entry: DexEntryView }) {
                 alt=""
               />
               <span className="collRow__name">{sp.name}</span>
-            </div>
+            </DexLink>
           </div>
         ))}
       </div>

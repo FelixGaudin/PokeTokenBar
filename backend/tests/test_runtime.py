@@ -248,3 +248,9 @@ async def test_every_selectable_candy_count_has_a_preview(rt):
     candy = next(b for b in rt.build_state().bag if b.kind == "rareCandy")
     assert candy.max_use == R.MAX_CANDY_PREVIEWS
     assert len(candy.previews) == candy.max_use
+
+
+def test_shop_items_report_how_many_can_be_bought_at_once(rt):
+    rt.store.state.used_since_install = 1_200_000_000
+    items = {i.kind: i.max_count for i in rt.build_state().shop.items}
+    assert items == {"rareCandy": 2, "mint": 12, "shinyCharm": 0}

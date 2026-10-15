@@ -409,6 +409,7 @@
   justify-items: center;
   gap: 2px;
   width: 76px;
+  border-radius: var(--radius-sm);
 }
 
 .collRow__name {
@@ -480,10 +481,18 @@
 
 .pd__who {
   display: flex;
+  flex: 1;
   flex-direction: column;
   gap: 2px;
   min-width: 0;
   font-size: 15px;
+}
+
+.pd__nameRow {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 8px;
 }
 
 .pd__name {
@@ -632,18 +641,11 @@
 }
 
 .pd__types {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 6px;
+  margin: 4px 0 2px;
 }
 
-.pd__type {
-  padding: 3px 6px;
-  border-radius: 999px;
-  background: color-mix(in srgb, var(--accent) 16%, transparent);
+.pd__types .badge {
   font-size: 11px;
-  font-weight: 700;
-  text-transform: uppercase;
 }
 
 .pd__moves {

@@ -687,6 +687,7 @@ class AppRuntime:
                 affordable=wallet >= self.companion.price(kind),
                 owned=kind.is_passive and self.companion.item_count(kind) > 0,
                 passive=kind.is_passive,
+                max_count=self.companion.max_buy_count(kind),
             )
             for kind in ItemKind
         ]
@@ -893,7 +894,12 @@ class AppRuntime:
                     base=details.base_stats.get(k, 0),
                     iv=profile.ivs.get(k),
                     value=actual_stat(
-                        k, details.base_stats.get(k, 0), profile.ivs.get(k), profile.level, nature
+                        k,
+                        details.base_stats.get(k, 0),
+                        profile.ivs.get(k),
+                        profile.level,
+                        nature,
+                        species_id=species_id,
                     ),
                 )
                 for k in STAT_KEYS

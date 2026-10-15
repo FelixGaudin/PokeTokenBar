@@ -1,5 +1,5 @@
 import json
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta, timezone
 from zoneinfo import ZoneInfo
 
 import pytest
@@ -359,3 +359,23 @@ def test_recent_days_reach_back_past_the_month_start(tmp_path):
     assert recent["2026-09-30"] == 710
     assert recent["2026-10-01"] == 110
     assert min(recent) == "2026-09-28", "from the start of the week"
+
+
+def test_an_idle_day_keeps_the_week_and_month_history(tmp_path):
+    root = tmp_path / "projects" / "p"
+    root.mkdir(parents=True)
+    now = datetime(2026, 9, 10, 12, tzinfo=UTC)  # a Thursday
+    _write_session(
+        root,
+        "a.jsonl",
+        [
+            _line("m1", "r1", "2026-09-02T12:00:00Z", out=1_000),
+            _line("m2", "r2", "2026-09-09T12:00:00Z", out=12_000),
+        ],
+    )
+    snap = UsageService([tmp_path / "projects"], TZ).snapshot(now=now)
+    assert snap.today.total_tokens == 0 and snap.block is None
+    assert snap.burn_tier == "idle"
+    assert snap.week.total_tokens == 12_010
+    assert snap.month.total_tokens == 13_020
+    assert [d.total_tokens for d in snap.month_daily if d.total_tokens] == [1_010, 12_010]

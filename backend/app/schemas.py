@@ -191,6 +191,8 @@ class ShopItemView(BaseModel):
     affordable: bool
     owned: bool
     passive: bool
+    # The most that can be bought in one go: wallet / price, at most 1 for a passive item.
+    max_count: int = 0
 
 
 class ShopEggView(BaseModel):
@@ -420,6 +422,7 @@ class UseCandyRequest(BaseModel):
 
 class BuyItemRequest(BaseModel):
     kind: str
+    count: int = 1
 
 
 class BuyEggRequest(BaseModel):
