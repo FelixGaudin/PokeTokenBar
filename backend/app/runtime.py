@@ -15,6 +15,7 @@ from datetime import datetime, timezone
 import httpx
 
 from . import balance as B
+from . import forms
 from .accounts import AccountFolder, discover, parse_entries
 from .balance import ItemKind, Rarity
 from .companion import CandyWindow, CompanionService
@@ -55,9 +56,9 @@ from .schemas import (
     ShopEggView,
     ShopItemView,
     ShopView,
+    SpeciesFormView,
     StateView,
     StatView,
-    UnownFormView,
     UsageView,
     WalletView,
 )
@@ -149,6 +150,8 @@ class AppRuntime:
         self._refresh_lock = asyncio.Lock()
         self._task: asyncio.Task | None = None
         self._http: httpx.AsyncClient | None = None
+        # Fire-and-forget warmups, referenced until done so they are not collected.
+        self._background: set[asyncio.Task] = set()
 
     # -- compatibility accessors for the default account -------------------
 
@@ -418,7 +421,7 @@ class AppRuntime:
         line = self.companion.current_line
         lang = self.store.state.language
         name = line.display_name(species_id, lang) if line else f"#{species_id}"
-        return B.display_name(name, species_id, form)
+        return self.companion.form_display_name(name, species_id, form)
 
     def _companion_view(self) -> CompanionView:
         state = self.store.state
@@ -466,7 +469,7 @@ class AppRuntime:
             active_view = ActiveView(
                 base_id=a.base_id,
                 species_id=a.current_id,
-                name=self._species_name(a.current_id, a.unown_form),
+                name=self._species_name(a.current_id, a.form),
                 rarity=a.rarity,
                 stage_index=a.stage_index,
                 total_forms=a.total_forms,
@@ -484,7 +487,8 @@ class AppRuntime:
                 growth_multiplier=B.REPEAT_GROWTH_MULTIPLIER if a.has_growth_boost else None,
                 is_high_value=self.companion.is_high_value_companion,
                 level=a.profile.level if a.profile else None,
-                unown_form=B.resolve_unown_form(a.current_id, a.unown_form),
+                form=a.form,
+                shows_alternate_form=not forms.is_default(a.current_id, a.form),
             )
 
         return CompanionView(
@@ -730,7 +734,7 @@ class AppRuntime:
             nature=a.nature,
             caught_at=None,
             profile=a.profile,
-            unown_form=a.unown_form,
+            form=a.form,
         )
 
     def _entry_view(
@@ -748,27 +752,27 @@ class AppRuntime:
         nature: str | None,
         caught_at: datetime | None,
         profile: PokemonProfile | None,
-        unown_form: str | None,
+        form: str | None,
     ) -> DexEntryView:
         lang = self.store.state.language
-        form = B.resolve_unown_form(base_id, unown_form)
+        form = forms.resolve_line(base_id, form)
         return DexEntryView(
             id=entry_id,
             is_active=is_active,
             is_released=is_released,
             base_id=base_id,
             final_id=final_id,
-            final_name=B.display_name(_name_from(names, final_id, lang), final_id, form),
+            final_name=forms.display_name(_name_from(names, final_id, lang), final_id, form),
             rarity=rarity,
             is_shiny=is_shiny,
             nature=nature,
             nature_label=B.NATURE_LABELS.get(nature or "", None),
             caught_at=caught_at.isoformat() if caught_at else None,
             level=profile.level if profile else None,
-            unown_form=form,
+            form=form,
             chain=[
                 DexChainSpecies(
-                    species_id=sid, name=B.display_name(_name_from(names, sid, lang), sid, form)
+                    species_id=sid, name=forms.display_name(_name_from(names, sid, lang), sid, form)
                 )
                 for sid in chain
             ],
@@ -799,7 +803,7 @@ class AppRuntime:
                     nature=entry.nature,
                     caught_at=entry.caught_at,
                     profile=entry.profile,
-                    unown_form=entry.unown_form,
+                    form=entry.form,
                 )
             )
         # Newest first is only the default; the client re-sorts.
@@ -807,7 +811,6 @@ class AppRuntime:
 
         a = state.active
         species: dict[int, DexSpeciesView] = {}
-        unown: dict[str, UnownFormView] = {}
 
         def fold(sid: int, name: str, names: dict[str, str], rarity: Rarity, shiny: bool,
                  caught: str | None, form: str | None, raising: bool) -> None:
@@ -832,33 +835,31 @@ class AppRuntime:
             if caught and (cell.first_caught_at is None or caught < cell.first_caught_at):
                 cell.first_caught_at = caught
             cell.search_names = sorted({*cell.search_names, *(n for n in names.values() if n)})
-            if sid == B.UNOWN_SPECIES_ID:
-                f = B.resolve_unown_form(sid, form) or "a"
-                u = unown.get(f) or UnownFormView(
-                    form=f,
-                    symbol=B.UNOWN_SYMBOLS[f],
-                    is_shiny=False,
-                    has_normal=False,
-                    is_raising=False,
-                )
+            resolved = forms.resolve(sid, form)
+            if resolved is not None:
+                if not cell.forms:
+                    cell.forms = [
+                        SpeciesFormView(form=f, label=self.companion.form_label(sid, f) or f)
+                        for f in forms.forms_of(sid)
+                    ]
+                slot = next(v for v in cell.forms if v.form == resolved)
                 if shiny:
-                    u.is_shiny = True
+                    slot.is_shiny = True
                 else:
-                    u.has_normal = True
-                u.is_raising = u.is_raising or raising
-                unown[f] = u
+                    slot.has_normal = True
+                slot.is_raising = slot.is_raising or raising
 
         for entry in state.dex:
             caught = entry.caught_at.isoformat() if entry.caught_at else None
             for sid in entry.chain_order:
                 fold(sid, _name_from(entry.names, sid, lang), entry.names.get(str(sid)) or {},
-                     entry.rarity, entry.is_shiny, caught, entry.unown_form, False)
+                     entry.rarity, entry.is_shiny, caught, entry.form, False)
         if a is not None:
             line = self.companion.current_line
             for sid in a.path_ids[: a.stage_index + 1]:
                 by_lang = (line.names.get(sid) or {}) if line else {}
                 fold(sid, resolve_name(by_lang, lang, sid), by_lang, a.rarity, a.current_is_shiny,
-                     None, a.unown_form, sid == a.current_id)
+                     None, a.form, sid == a.current_id)
             catch_log.insert(0, self._active_entry(a))
 
         return CollectionView(
@@ -866,26 +867,40 @@ class AppRuntime:
             counts_by_rarity=counts,
             catch_log=catch_log,
             pokedex=sorted(species.values(), key=lambda s: s.species_id),
-            unown_forms=sorted(unown.values(), key=lambda u: B.UNOWN_FORMS.index(u.form)),
         )
 
     # -- detail page -------------------------------------------------------
+
+    async def _warm_species_form_names(self, species_id: int) -> None:
+        """Every form's name, for the detail page's picker; it shows identifiers meanwhile."""
+        results = await asyncio.gather(
+            *(self.poke.form_names(r) for r in forms.name_resources(species_id)
+              if self.poke.cached_form_names(r) is None),
+            return_exceptions=True,
+        )
+        failed = [r for r in results if isinstance(r, BaseException)]
+        if failed:
+            log.info("form names for %d: %d unavailable (%s)", species_id, len(failed), failed[0])
 
     async def pokemon_detail(self, species_id: int, form: str | None = None) -> PokemonDetailView:
         details = await self.poke.pokemon_details(species_id)
         # Details just arrived: fill in every stored individual of this species.
         self.companion.enrich_dex(species_id)
+        if forms.forms_of(species_id):
+            task = asyncio.create_task(self._warm_species_form_names(species_id))
+            self._background.add(task)
+            task.add_done_callback(self._background.discard)
         state = self.store.state
         lang = state.language
 
         individuals: list[tuple[str, IndividualView]] = []
         rarity: Rarity | None = None
         name: str | None = None
-        wanted_form = B.resolve_unown_form(species_id, form) if form else None
+        wanted_form = forms.resolve(species_id, form) if form else None
 
         def add(entry_id: str, is_active: bool, profile: PokemonProfile, shiny: bool,
-                nature: str | None, caught_at: datetime | None, unown_form: str | None) -> None:
-            resolved = B.resolve_unown_form(species_id, unown_form)
+                nature: str | None, caught_at: datetime | None, line_form: str | None) -> None:
+            resolved = forms.resolve(species_id, line_form)
             if wanted_form is not None and resolved != wanted_form:
                 return
             stats = [
@@ -918,7 +933,7 @@ class AppRuntime:
                         nature_label=B.NATURE_LABELS.get(nature or "", None),
                         ability_name=profile.ability_name,
                         ability_is_hidden=profile.ability_is_hidden,
-                        unown_form=resolved,
+                        form=resolved,
                         stats=stats,
                         stat_scale=stat_bar_scale([s.value or 0 for s in stats]),
                         moves=[
@@ -942,7 +957,7 @@ class AppRuntime:
                     entry.is_shiny,
                     entry.nature,
                     entry.caught_at,
-                    entry.unown_form,
+                    entry.form,
                 )
         # Newest first.
         individuals.sort(key=lambda kv: kv[0], reverse=True)
@@ -960,7 +975,7 @@ class AppRuntime:
                     a.current_is_shiny,
                     a.nature,
                     None,
-                    a.unown_form,
+                    a.form,
                 )
                 if len(individuals) > before:
                     individuals.insert(0, individuals.pop())
@@ -1005,9 +1020,9 @@ class AppRuntime:
 def _graduate_view(e: DexEntry, lang: str) -> RecapGraduateView:
     return RecapGraduateView(
         species_id=e.final_id,
-        name=B.display_name(_name_from(e.names, e.final_id, lang), e.final_id, e.unown_form),
+        name=forms.display_name(_name_from(e.names, e.final_id, lang), e.final_id, e.form),
         is_shiny=e.is_shiny,
-        unown_form=B.resolve_unown_form(e.final_id, e.unown_form),
+        form=e.form,
     )
 
 

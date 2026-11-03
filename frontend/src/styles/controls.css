@@ -224,6 +224,28 @@
   font-size: 13px;
 }
 
+.snapshots__toggle {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  margin-top: 10px;
+  padding: 2px 0;
+  border: 0;
+  background: none;
+  color: var(--text-dim);
+  font: inherit;
+  font-size: 13px;
+  cursor: pointer;
+}
+
+.snapshots__toggle:hover {
+  color: var(--accent);
+}
+
+.snapshots__chevron {
+  width: 10px;
+}
+
 .snapshots__list {
   list-style: none;
   margin: 10px 0 0;

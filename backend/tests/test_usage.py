@@ -1,4 +1,5 @@
 import json
+import os
 from datetime import UTC, datetime, timedelta, timezone
 from zoneinfo import ZoneInfo
 
@@ -379,3 +380,119 @@ def test_an_idle_day_keeps_the_week_and_month_history(tmp_path):
     assert snap.week.total_tokens == 12_010
     assert snap.month.total_tokens == 13_020
     assert [d.total_tokens for d in snap.month_daily if d.total_tokens] == [1_010, 12_010]
+
+
+INCR_NOW = datetime(2026, 9, 10, 12, tzinfo=UTC)
+INCR_TS = "2026-09-10T11:00:00Z"
+
+
+def _append(path, text):
+    with path.open("a") as fh:
+        fh.write(text)
+
+
+def _windows(snap):
+    return (snap.today, snap.week, snap.month, snap.block, snap.month_daily)
+
+
+def _session_root(tmp_path):
+    root = tmp_path / "projects" / "p"
+    root.mkdir(parents=True)
+    return root
+
+
+def test_a_grown_session_is_read_from_where_the_last_refresh_stopped(tmp_path):
+    root = _session_root(tmp_path)
+    path = _write_session(root, "a.jsonl", [_line("m1", "r1", INCR_TS, out=1_000)])
+    svc = UsageService([tmp_path / "projects"], TZ)
+    assert svc.snapshot(now=INCR_NOW).today.output == 1_000
+
+    # Bytes already parsed are never read again: blanking them in place while the file
+    # grows shows that only the appended tail was parsed.
+    first = path.read_bytes()
+    tail = _line("m2", "r2", INCR_TS, out=500) + "\n"
+    path.write_bytes(b" " * (len(first) - 1) + b"\n" + tail.encode())
+    assert svc.snapshot(now=INCR_NOW).today.output == 1_500
+
+
+def test_parsing_only_the_tail_matches_a_full_read(tmp_path):
+    root = _session_root(tmp_path)
+    path = _write_session(
+        root,
+        "a.jsonl",
+        [
+            _line("m1", "r1", "2026-09-10T10:00:00Z", out=100),
+            _cost_state({"claude-opus-5": 1.0}),
+            _line("m2", "r2", "2026-09-10T10:05:00Z", out=200),
+        ],
+    )
+    svc = UsageService([tmp_path / "projects"], TZ)
+    svc.snapshot(now=INCR_NOW)
+
+    # m1 finishes streaming in the tail with a larger total under a later replay time,
+    # and a newer ledger supersedes the first one.
+    _append(
+        path,
+        "\n".join(
+            [
+                _line("m1", "r1", "2026-09-10T11:00:00Z", out=900),
+                _line("m3", "r3", "2026-09-10T11:05:00Z", out=300),
+                _cost_state({"claude-opus-5": 4.0}),
+            ]
+        )
+        + "\n",
+    )
+    grown = svc.snapshot(now=INCR_NOW)
+    fresh = UsageService([tmp_path / "projects"], TZ).snapshot(now=INCR_NOW)
+
+    assert _windows(grown) == _windows(fresh)
+    assert grown.today.output == 900 + 200 + 300
+    assert grown.today.cost == pytest.approx(4.0)
+    assert grown.block is not None and grown.block.start == "2026-09-10T10:00:00+00:00"
+
+
+def test_a_half_written_line_is_read_once_it_is_complete(tmp_path):
+    root = _session_root(tmp_path)
+    path = root / "a.jsonl"
+    pending = _line("m2", "r2", INCR_TS, out=500)
+    path.write_text(_line("m1", "r1", INCR_TS, out=1_000) + "\n" + pending[:40])
+    svc = UsageService([tmp_path / "projects"], TZ)
+    assert svc.snapshot(now=INCR_NOW).today.output == 1_000
+
+    _append(path, pending[40:] + "\n")
+    assert svc.snapshot(now=INCR_NOW).today.output == 1_500
+
+
+def test_a_final_line_without_a_newline_counts_once(tmp_path):
+    root = _session_root(tmp_path)
+    path = root / "a.jsonl"
+    path.write_text(_line("m1", "r1", INCR_TS, out=1_000))
+    svc = UsageService([tmp_path / "projects"], TZ)
+    assert svc.snapshot(now=INCR_NOW).today.output == 1_000
+
+    _append(path, "\n" + _line("m2", "r2", INCR_TS, out=500) + "\n")
+    grown = svc.snapshot(now=INCR_NOW)
+    fresh = UsageService([tmp_path / "projects"], TZ).snapshot(now=INCR_NOW)
+    assert grown.today.total_tokens == 1_500 + 20
+    assert _windows(grown) == _windows(fresh)
+
+
+def test_a_truncated_or_rewritten_session_is_read_again_from_the_start(tmp_path):
+    root = _session_root(tmp_path)
+    path = _write_session(
+        root,
+        "a.jsonl",
+        [_line("m1", "r1", INCR_TS, out=1_000), _line("m2", "r2", INCR_TS, out=2_000)],
+    )
+    svc = UsageService([tmp_path / "projects"], TZ)
+    assert svc.snapshot(now=INCR_NOW).today.output == 3_000
+
+    _write_session(root, "a.jsonl", [_line("m3", "r3", INCR_TS, out=7)])
+    assert svc.snapshot(now=INCR_NOW).today.output == 7
+
+    # Same size, new content: only the mtime tells this rewrite apart.
+    before = path.stat()
+    _write_session(root, "a.jsonl", [_line("m4", "r4", INCR_TS, out=8)])
+    assert path.stat().st_size == before.st_size
+    os.utime(path, ns=(before.st_atime_ns, before.st_mtime_ns + 1_000_000_000))
+    assert svc.snapshot(now=INCR_NOW).today.output == 8

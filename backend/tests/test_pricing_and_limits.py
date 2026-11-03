@@ -16,10 +16,12 @@ def test_published_rates_for_current_models():
         "claude-opus-5": (5, 25, 6.25, 0.5),
         "claude-opus-4-8": (5, 25, 6.25, 0.5),
         "claude-sonnet-5": (2, 10, 2.5, 0.2),
-        "claude-sonnet-5-5": (2, 10, 2.5, 0.2),
+        "claude-sonnet-5-5": (2, 10, 2.5, 0.1),
         "claude-sonnet-4-6": (3, 15, 3.75, 0.3),
+        "claude-opus-4-5": (5, 25, 6.25, 0.5),
         "claude-opus-4-20250514": (15, 75, 18.75, 1.5),
         "claude-haiku-4-5": (1, 5, 1.25, 0.1),
+        "claude-haiku-5-5": (0.1, 0.5, 0.125, 0.01),
         "claude-fable-5": (10, 50, 12.5, 1.0),
         "claude-fable-5-1": (10, 50, 12.5, 0.25),
     }
@@ -34,6 +36,7 @@ def test_published_rates_for_current_models():
 def test_model_ids_are_normalised_before_lookup():
     assert rate_for(" ANTHROPIC/CLAUDE-FABLE-5-1 ") == rate_for("claude-fable-5-1")
     assert rate_for("claude-haiku-4-5") == rate_for("claude-haiku-4-5-20251001")
+    assert rate_for("claude-opus-4-5") == rate_for("claude-opus-4-5-20251101")
 
 
 def test_unknown_models_never_borrow_a_family_price():
@@ -55,11 +58,13 @@ def test_models_in_the_logs_are_all_priced():
         "claude-opus-5": 0.19409175,
         "claude-opus-5-5": 0.1467382,
         "claude-sonnet-5": 0.0776367,
-        "claude-sonnet-5-5": 0.0776367,
+        "claude-sonnet-5-5": 0.0733691,
+        "claude-opus-4-5": 0.19409175,
         "claude-opus-4-8": 0.19409175,
         "claude-opus-4-7": 0.19409175,
         "claude-sonnet-4-6": 0.11645505,
         "claude-haiku-4-5": 0.03881835,
+        "claude-haiku-5-5": 0.003881835,
         "claude-fable-5": 0.3881835,
         "claude-fable-5-1": 0.3561765,
     }
@@ -74,6 +79,18 @@ def test_estimated_cost_edge_cases():
     everything = dict(input=MILLION, output=MILLION, cache_write=MILLION, cache_read=MILLION)
     assert cost("claude-fable-5", **everything) == pytest.approx(73.5)
     assert cost("claude-fable-5-1", input=0, output=0, cache_write=0, cache_read=MILLION) == 0.25
+
+
+def test_haiku_5_5_prices_a_long_prompt_at_the_higher_rates():
+    """Over 100,000 prompt tokens (cache reads and writes included) every category costs 5x."""
+    at_limit = dict(input=40_000, output=1_000, cache_write=10_000, cache_read=50_000)
+    over = dict(at_limit, cache_read=50_001)
+    assert estimated_cost("claude-haiku-5-5", **at_limit) == pytest.approx(
+        (40_000 * 0.1 + 1_000 * 0.5 + 10_000 * 0.125 + 50_000 * 0.01) / MILLION
+    )
+    assert estimated_cost("claude-haiku-5-5", **over) == pytest.approx(
+        (40_000 * 0.5 + 1_000 * 2.5 + 10_000 * 0.625 + 50_001 * 0.05) / MILLION
+    )
 
 
 def test_an_unpriced_model_is_reported_once():

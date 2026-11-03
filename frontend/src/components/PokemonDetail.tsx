@@ -1,14 +1,7 @@
 import { useEffect, useState } from "react";
 import { api } from "../lib/api";
 import { titleCase } from "../lib/format";
-import {
-  STAT_LABELS,
-  UNOWN_FORMS,
-  UNOWN_ID,
-  moveMethodsText,
-  slugLabel,
-  unownSymbol,
-} from "../lib/dex";
+import { STAT_LABELS, UNOWN_ID, collectedForms, moveMethodsText, slugLabel } from "../lib/dex";
 import { Meter, Sprite, TypeBadges } from "./Primitives";
 import type {
   DexEntryView,
@@ -16,7 +9,6 @@ import type {
   IndividualView,
   PokemonDetailView,
   StatView,
-  UnownFormView,
 } from "../types";
 
 type Load =
@@ -51,19 +43,19 @@ function individualLabel(ind: IndividualView, n: number, lang: string): string {
 
 export function PokemonDetail({
   species,
-  unownForms,
   entries,
   language,
   onBack,
 }: {
   species: DexSpeciesView;
-  unownForms: UnownFormView[];
   /** The catch log, used to guess the appearance before the individuals arrive. */
   entries: DexEntryView[];
   language: string;
   onBack: () => void;
 }) {
   const isUnown = species.species_id === UNOWN_ID;
+  const forms = species.forms;
+  const collected = collectedForms(forms);
   const [selectedForm, setSelectedForm] = useState<string | null>(null);
   const [selectedShiny, setSelectedShiny] = useState<boolean | null>(null);
   const [selectedId, setSelectedId] = useState<string | null>(null);
@@ -85,14 +77,14 @@ export function PokemonDetail({
   const current = load && load.key === loadKey ? load : null;
   const data = current?.status === "ok" ? current.data : null;
 
-  const formView = selectedForm ? unownForms.find((f) => f.form === selectedForm) : undefined;
+  const formView = selectedForm ? forms.find((f) => f.form === selectedForm) : undefined;
   const ownsShiny = formView ? formView.is_shiny : species.is_shiny;
   const ownsNormal = formView ? formView.has_normal : species.has_normal;
 
   const all = data?.individuals ?? [];
   const guess = entries.find(
     (e) =>
-      e.final_id === species.species_id && (!selectedForm || e.unown_form === selectedForm),
+      e.final_id === species.species_id && (!selectedForm || e.form === selectedForm),
   );
   const displayedShiny =
     selectedShiny !== null && (selectedShiny ? ownsShiny : ownsNormal)
@@ -103,11 +95,15 @@ export function PokemonDetail({
   const individuals = all.filter((i) => i.is_shiny === displayedShiny);
   const individual = individuals.find((i) => i.id === selectedId) ?? individuals[0] ?? null;
 
-  const spriteForm = isUnown
-    ? (selectedForm ?? individual?.unown_form ?? guess?.unown_form ?? unownForms[0]?.form ?? null)
-    : null;
-  const symbol = isUnown ? unownSymbol(spriteForm) : null;
-  const name = symbol ? `${species.name} [${symbol}]` : species.name;
+  const spriteForm =
+    forms.length > 0
+      ? (selectedForm ?? individual?.form ?? guess?.form ?? collected[0]?.form ?? null)
+      : null;
+  const shownForm = forms.find((f) => f.form === spriteForm);
+  // Unown always names its letter; other species name only a non-default form.
+  const alternate = shownForm !== undefined && shownForm.form !== forms[0].form;
+  const name =
+    shownForm && (isUnown || alternate) ? `${species.name} [${shownForm.label}]` : species.name;
   const rarity = data?.rarity ?? species.rarity;
 
   const chooseForm = (form: string) => {
@@ -162,38 +158,42 @@ export function PokemonDetail({
             <span className={`pd__rarity pd__rarity--${rarity}`}>{titleCase(rarity)}</span>
           </div>
           {data && data.types.length > 0 && <TypeBadges types={data.types} className="pd__types" />}
+          {data && alternate && <span className="pd__formNote">Data uses the default form</span>}
           {displayedShiny && <span className="pd__shiny">✨ Shiny</span>}
           {individual?.is_active && <span className="pd__raising">Raising</span>}
         </div>
       </div>
 
-      {isUnown && (
+      {forms.length > 0 && (
         <div className="pd__card">
-          <h3 className="pd__title">Unown forms {unownForms.length}/28</h3>
-          <div className="pd__unown">
-            {UNOWN_FORMS.map(({ form, symbol: sym }) => {
-              const owned = unownForms.find((f) => f.form === form);
+          <h3 className="pd__title">
+            Forms {collected.length}/{forms.length}
+          </h3>
+          <div className={`pd__forms ${isUnown ? "pd__forms--letters" : ""}`}>
+            {forms.map((f) => {
+              const owned = f.has_normal || f.is_shiny;
+              const fullName = `${species.name} [${f.label}]`;
               return (
                 <button
-                  key={form}
+                  key={f.form}
                   type="button"
-                  className={`pd__form ${selectedForm === form ? "is-selected" : ""}`}
+                  className={`pd__form ${selectedForm === f.form ? "is-selected" : ""}`}
                   disabled={!owned}
-                  title={owned ? `Unown [${sym}]` : "Not collected"}
-                  aria-label={owned ? `Unown ${sym}` : `Unown ${sym}, not collected`}
-                  aria-pressed={selectedForm === form}
-                  onClick={() => chooseForm(form)}
+                  title={owned ? fullName : "Not collected"}
+                  aria-label={owned ? fullName : `${fullName}, not collected`}
+                  aria-pressed={selectedForm === f.form}
+                  onClick={() => chooseForm(f.form)}
                 >
                   <Sprite
-                    speciesId={UNOWN_ID}
-                    shiny={owned ? !owned.has_normal : false}
+                    speciesId={species.species_id}
+                    shiny={owned && !f.has_normal}
                     animated={false}
                     size={32}
-                    form={form}
+                    form={f.form}
                     alt=""
                   />
-                  <span className="pd__formSym">{sym}</span>
-                  {owned?.is_shiny && (
+                  <span className="pd__formLabel">{f.label}</span>
+                  {f.is_shiny && (
                     <span className="pd__formShiny" aria-hidden="true">
                       ✨
                     </span>

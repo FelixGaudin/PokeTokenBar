@@ -40,7 +40,10 @@ export interface ActiveView {
   /** Shiny or legendary: sending it off asks twice. */
   is_high_value: boolean;
   level: number | null;
-  unown_form: string | null;
+  /** The individual's form for its whole line; the sprite route resolves it per species. */
+  form: string | null;
+  /** The current species shows a non-default form, whose data is the default form's. */
+  shows_alternate_form: boolean;
 }
 
 export interface EggView {
@@ -237,7 +240,7 @@ export interface DexEntryView {
   nature_label: string | null;
   caught_at: string | null;
   level: number | null;
-  unown_form: string | null;
+  form: string | null;
   chain: DexChainSpecies[];
   /** Every stored name of every species in the chain, in every language. */
   search_names: string[];
@@ -255,11 +258,15 @@ export interface DexSpeciesView {
   is_raising: boolean;
   first_caught_at: string | null;
   search_names: string[];
+  /** Every form of a species that has several, default first; empty otherwise. */
+  forms: SpeciesFormView[];
 }
 
-export interface UnownFormView {
+/** One of a species' forms, collected or not. Shiny ownership is tracked per form. */
+export interface SpeciesFormView {
   form: string;
-  symbol: string;
+  /** Unown's letter, or the localized form name. */
+  label: string;
   is_shiny: boolean;
   has_normal: boolean;
   is_raising: boolean;
@@ -270,7 +277,6 @@ export interface CollectionView {
   counts_by_rarity: Record<string, number>;
   catch_log: DexEntryView[];
   pokedex: DexSpeciesView[];
-  unown_forms: UnownFormView[];
 }
 
 export interface StatView {
@@ -296,7 +302,7 @@ export interface IndividualView {
   nature_label: string | null;
   ability_name: string | null;
   ability_is_hidden: boolean;
-  unown_form: string | null;
+  form: string | null;
   stats: StatView[];
   stat_scale: number;
   moves: { name: string; learned_at_level: number }[];
@@ -336,7 +342,7 @@ export interface RecapView {
   counted_days: number;
   best_streak: number;
   graduated_count: number;
-  graduated: { species_id: number; name: string; is_shiny: boolean; unown_form: string | null }[];
+  graduated: { species_id: number; name: string; is_shiny: boolean; form: string | null }[];
   can_go_back: boolean;
 }
 
@@ -347,6 +353,7 @@ export interface SnapshotView {
   lifetime_tokens: number;
   current_species_id: number | null;
   current_is_shiny: boolean;
+  current_form: string | null;
 }
 
 export interface MetaView {

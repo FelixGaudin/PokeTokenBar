@@ -163,7 +163,7 @@ function CompanionCard({
             <Sprite
               speciesId={active.species_id}
               shiny={active.is_shiny}
-              form={active.unown_form}
+              form={active.form}
               size={120}
               alt={active.name}
             />
@@ -178,7 +178,12 @@ function CompanionCard({
             {active.nature_label && <span className="nature">{active.nature_label}</span>}
           </div>
           {types?.id === active.species_id && types.types.length > 0 && (
-            <TypeBadges types={types.types} className="home__types" />
+            <>
+              <TypeBadges types={types.types} className="home__types" />
+              {active.shows_alternate_form && (
+                <p className="home__formNote">Data uses the default form</p>
+              )}
+            </>
           )}
           <p className="companion__stage">
             {stageLabel}
@@ -225,7 +230,7 @@ function CompanionCard({
                   <Sprite
                     speciesId={slot.species_id}
                     shiny={active.is_shiny}
-                    form={active.unown_form}
+                    form={active.form}
                     animated={false}
                     size={52}
                     alt={slot.name ?? ""}
@@ -368,6 +373,7 @@ function TokenStats({ state, onRecap }: { state: StateView; onRecap: () => void 
             aria-label="Usage recap"
           >
             <RecapIcon />
+            <span className="home__recapLabel">Details</span>
           </button>
         </div>
         <div className="rangeRow__item">

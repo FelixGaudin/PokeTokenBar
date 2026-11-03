@@ -42,6 +42,7 @@ def resolve_name(by_lang: dict[str, str], lang: str, species_id: int) -> str:
 
 BASE_INDEX_TTL = 30 * 86_400
 DETAILS_TTL = 30 * 86_400
+FORM_NAMES_TTL = 30 * 86_400
 # Moves are read from one version group so level-up tables are consistent.
 MOVE_VERSION_GROUP = "black-2-white-2"
 
@@ -143,6 +144,7 @@ class PokeAPIClient:
         self._species: dict[int, dict[str, Any]] = {}
         self._lines: dict[int, EvoLine] = {}
         self._details: dict[int, PokemonDetails] = {}
+        self._form_names: dict[int, dict[str, str]] = {}
         self._base_index: list[BaseSpecies] | None = None
         self._index_lock = asyncio.Lock()
         self._rest_build_started = False
@@ -287,6 +289,43 @@ class PokeAPIClient:
         _atomic_write_json(path, {"fetched_at": time.time(), "details": _details_to_dict(details)})
         self._details[species_id] = details
         return details
+
+    # -- localized form names ----------------------------------------------
+
+    def _form_names_file(self, form_id: int) -> Path:
+        return self.cache_dir / "pokemon-forms-v1" / f"{form_id}.json"
+
+    def cached_form_names(self, form_id: int) -> dict[str, str] | None:
+        """Memory or disk only, never the network — safe to call from the refresh path."""
+        cached = self._form_names.get(form_id)
+        if cached is not None:
+            return cached
+        disk = _read_form_names(self._form_names_file(form_id))
+        if disk is None:
+            return None
+        self._form_names[form_id] = disk[1]
+        return disk[1]
+
+    async def form_names(self, form_id: int) -> dict[str, str]:
+        """A `pokemon-form` resource's names by language ("Sky Forme", "Forme Céleste")."""
+        cached = self._form_names.get(form_id)
+        if cached is not None:
+            return cached
+        path = self._form_names_file(form_id)
+        disk = _read_form_names(path)
+        if disk is not None and time.time() - disk[0] < FORM_NAMES_TTL:
+            self._form_names[form_id] = disk[1]
+            return disk[1]
+        try:
+            names = parse_form_names(await self._get_json(f"{REST_BASE}/pokemon-form/{form_id}"))
+        except Exception:
+            if disk is not None:
+                self._form_names[form_id] = disk[1]
+                return disk[1]
+            raise
+        _atomic_write_json(path, {"fetched_at": time.time(), "names": names})
+        self._form_names[form_id] = names
+        return names
 
     # -- hatch candidate index ---------------------------------------------
 
@@ -499,6 +538,26 @@ def _details_to_dict(d: PokemonDetails) -> dict[str, Any]:
             for m in d.moves
         ],
     }
+
+
+def parse_form_names(raw: dict[str, Any]) -> dict[str, str]:
+    # Forms report Japanese as "ja-hrkt" where species say "ja-Hrkt".
+    codes = {c.lower(): c for c in LANG_CODES}
+    names: dict[str, str] = {}
+    for entry in raw.get("form_names") or []:
+        code = codes.get((((entry.get("language") or {}).get("name")) or "").lower())
+        if code and entry.get("name"):
+            names[code] = entry["name"]
+    return names
+
+
+def _read_form_names(path: Path) -> tuple[float, dict[str, str]] | None:
+    try:
+        raw = json.loads(path.read_text())
+        names = {str(k): str(v) for k, v in (raw["names"] or {}).items()}
+    except (OSError, json.JSONDecodeError, ValueError, KeyError, TypeError, AttributeError):
+        return None
+    return float(raw.get("fetched_at") or 0.0), names
 
 
 def _read_details(path: Path) -> tuple[float, PokemonDetails] | None:

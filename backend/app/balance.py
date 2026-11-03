@@ -182,40 +182,6 @@ DITTO_SPECIES_ID = 132
 # PokéAPI only ships animated Gen-V sprites up to national dex #649.
 ANIMATED_SPECIES_MAX = 649
 
-# Unown hatches as one of 28 letters. Uncollected letters weigh 2, collected ones 1.
-UNOWN_SPECIES_ID = 201
-UNOWN_FORMS = [chr(c) for c in range(ord("a"), ord("z") + 1)] + ["exclamation", "question"]
-UNOWN_SYMBOLS = {f: (f.upper() if len(f) == 1 else {"exclamation": "!", "question": "?"}[f])
-                 for f in UNOWN_FORMS}
-
-
-def resolve_unown_form(species_id: int, form: str | None) -> str | None:
-    """Unown always has a letter (legacy records read as A); nothing else has one."""
-    if species_id != UNOWN_SPECIES_ID:
-        return None
-    return form if form in UNOWN_SYMBOLS else "a"
-
-
-def roll_unown_form(r: int, collected: set[str]) -> str:
-    weights = [collection_weight(2, f in collected) for f in UNOWN_FORMS]
-    remaining = r % sum(weights)
-    for form, weight in zip(UNOWN_FORMS[:-1], weights[:-1], strict=True):
-        remaining -= weight
-        if remaining < 0:
-            return form
-    return UNOWN_FORMS[-1]
-
-
-def display_name(name: str, species_id: int, form: str | None) -> str:
-    resolved = resolve_unown_form(species_id, form)
-    return f"{name} [{UNOWN_SYMBOLS[resolved]}]" if resolved else name
-
-
-def sprite_name(species_id: int, form: str | None) -> str:
-    """PokéAPI sprite file stem: Unown A keeps the plain id, other letters get a suffix."""
-    resolved = resolve_unown_form(species_id, form)
-    return f"{species_id}-{resolved}" if resolved and resolved != "a" else str(species_id)
-
 NATURES = [
     "hardy", "lonely", "brave", "adamant", "naughty",
     "bold", "docile", "relaxed", "impish", "lax",

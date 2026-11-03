@@ -17,6 +17,7 @@ class StubPoke:
         self.index = index if index is not None else [BaseSpecies(1, 255)]
         self.line_calls = 0
         self.details: dict = {}
+        self.form_names_by_id: dict[int, dict[str, str]] = {}
 
     async def line(self, base_species_id: int) -> EvoLine:
         self.line_calls += 1
@@ -39,6 +40,15 @@ class StubPoke:
             return self.details[species_id]
         except KeyError:
             raise ValueError(f"no stub details for {species_id}") from None
+
+    def cached_form_names(self, form_id: int):
+        return self.form_names_by_id.get(form_id)
+
+    async def form_names(self, form_id: int):
+        try:
+            return self.form_names_by_id[form_id]
+        except KeyError:
+            raise ValueError(f"no stub form names for {form_id}") from None
 
 
 def three_stage_line(base=1, rarity=Rarity.COMMON) -> EvoLine:

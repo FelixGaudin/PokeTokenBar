@@ -12,9 +12,10 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
-from pydantic import BaseModel, Field, ValidationError, field_validator
+from pydantic import AliasChoices, BaseModel, Field, ValidationError, field_validator
 
 from . import balance as B
+from . import forms
 from .balance import Rarity
 from .profile import MAX_TOKEN_VALUE, PokemonProfile, fnv1a64, reconstructed_growth
 
@@ -59,14 +60,16 @@ class MonState(BaseModel):
     # This line graduated before, so every stage costs half.
     has_growth_boost: bool = False
     profile: PokemonProfile | None = None
-    unown_form: str | None = None
+    # The individual's form for its whole line (see forms.py); saves before other
+    # species had forms called it unown_form.
+    form: str | None = Field(default=None, validation_alias=AliasChoices("form", "unown_form"))
 
     @field_validator("profile", mode="before")
     @classmethod
     def _lenient(cls, v: Any) -> PokemonProfile | None:
         return _lenient_profile(v)
 
-    @field_validator("unown_form", mode="before")
+    @field_validator("form", mode="before")
     @classmethod
     def _form(cls, v: Any) -> str | None:
         return v if isinstance(v, str) else None
@@ -102,14 +105,14 @@ class DexEntry(BaseModel):
     nature: str | None = None
     names: dict[str, dict[str, str]] = Field(default_factory=dict)
     profile: PokemonProfile | None = None
-    unown_form: str | None = None
+    form: str | None = Field(default=None, validation_alias=AliasChoices("form", "unown_form"))
 
     @field_validator("profile", mode="before")
     @classmethod
     def _lenient(cls, v: Any) -> PokemonProfile | None:
         return _lenient_profile(v)
 
-    @field_validator("unown_form", mode="before")
+    @field_validator("form", mode="before")
     @classmethod
     def _form(cls, v: Any) -> str | None:
         return v if isinstance(v, str) else None
@@ -136,7 +139,6 @@ class SaveState(BaseModel):
     egg_usage: int = 0
     egg_tier: Rarity | None = None
     egg_prefetch_base_id: int | None = None
-    pending_unown_form: str | None = None
 
     active: MonState | None = None
     dex: list[DexEntry] = Field(default_factory=list)
@@ -194,12 +196,9 @@ def sanitize(state: SaveState) -> None:
     state.used_since_install = min(MAX_TOKEN_VALUE, max(0, state.used_since_install))
     state.spent_tokens = min(MAX_TOKEN_VALUE, max(0, state.spent_tokens))
     state.egg_usage = min(MAX_TOKEN_VALUE, max(0, state.egg_usage))
-    state.pending_unown_form = B.resolve_unown_form(
-        state.egg_prefetch_base_id or 0, state.pending_unown_form
-    )
     if state.active is not None:
         a = state.active
-        a.unown_form = B.resolve_unown_form(a.base_id, a.unown_form)
+        a.form = forms.resolve_line(a.base_id, a.form)
         # A hand-edited chain can repeat a species; keep its first appearance only.
         a.path_ids = _deduped(a.path_ids)
         a.planned_path_ids = _deduped(a.planned_path_ids)
@@ -213,7 +212,7 @@ def sanitize(state: SaveState) -> None:
             entry.caught_at = entry.caught_at.replace(tzinfo=timezone.utc)
         if entry.released_at is not None and entry.released_at.tzinfo is None:
             entry.released_at = entry.released_at.replace(tzinfo=timezone.utc)
-        entry.unown_form = B.resolve_unown_form(entry.base_id, entry.unown_form)
+        entry.form = forms.resolve_line(entry.base_id, entry.form)
         entry.chain_order = _deduped(entry.chain_order)
         if entry.profile is not None:
             entry.profile.sanitize()
@@ -237,6 +236,7 @@ class SnapshotInfo(BaseModel):
     lifetime_tokens: int
     current_species_id: int | None
     current_is_shiny: bool
+    current_form: str | None = None
 
 
 _STAMP = re.compile(r"^companion-snapshot-(\d{4}-\d{2}-\d{2}-\d{6})(?:-\d+)?\.json$")
@@ -347,6 +347,7 @@ class StateStore:
                     lifetime_tokens=state.used_since_install,
                     current_species_id=state.active.current_id if state.active else None,
                     current_is_shiny=state.active.current_is_shiny if state.active else False,
+                    current_form=state.active.form if state.active else None,
                 )
             )
         out.sort(key=lambda s: (s.created_at, s.id), reverse=True)

@@ -82,18 +82,23 @@ more than once, the earliest time is kept, so a fork never drags old usage into 
 is present, its per-model `costUSD` is what you see: it is spread over that model's turns in
 proportion to tokens, and the last ledger in a file wins. Turns with no ledger are priced
 from the table below (USD per million tokens; cache writes at the 5-minute rate). Current
-Claude models serve their 1M context at standard rates, so there's no long-context tier.
+Claude models serve their 1M context at standard rates, except Haiku 5.5: a request whose
+prompt (input, cache writes and cache reads together) is over 100,000 tokens pays its
+second row.
 
-| Model                                     | Input | Output | Cache write | Cache read |
-| ----------------------------------------- | ----: | -----: | ----------: | ---------: |
-| `claude-opus-5-5`                         |    $4 |    $20 |       $5.00 |      $0.20 |
-| `claude-opus-5`, `claude-opus-4-8/4-7/4-6` |    $5 |    $25 |       $6.25 |      $0.50 |
-| `claude-sonnet-5`                         |    $2 |    $10 |       $2.50 |      $0.20 |
-| `claude-sonnet-4-6`, `-4-5`, `-4`         |    $3 |    $15 |       $3.75 |      $0.30 |
-| `claude-opus-4` (2025-05-14)              |   $15 |    $75 |      $18.75 |      $1.50 |
-| `claude-haiku-4-5`                        |    $1 |     $5 |       $1.25 |      $0.10 |
-| `claude-fable-5`                          |   $10 |    $50 |      $12.50 |      $1.00 |
-| `claude-fable-5-1`                        |   $10 |    $50 |      $12.50 |      $0.25 |
+| Model                                          | Input | Output | Cache write | Cache read |
+| ---------------------------------------------- | ----: | -----: | ----------: | ---------: |
+| `claude-opus-5-5`                              |    $4 |    $20 |       $5.00 |      $0.20 |
+| `claude-opus-5`, `claude-opus-4-8/4-7/4-6/4-5` |    $5 |    $25 |       $6.25 |      $0.50 |
+| `claude-sonnet-5-5`                            |    $2 |    $10 |       $2.50 |      $0.10 |
+| `claude-sonnet-5`                              |    $2 |    $10 |       $2.50 |      $0.20 |
+| `claude-sonnet-4-6`, `-4-5`, `-4`              |    $3 |    $15 |       $3.75 |      $0.30 |
+| `claude-opus-4` (2025-05-14)                   |   $15 |    $75 |      $18.75 |      $1.50 |
+| `claude-haiku-5-5` (prompt up to 100K)         | $0.10 |  $0.50 |      $0.125 |      $0.01 |
+| `claude-haiku-5-5` (prompt over 100K)          | $0.50 |  $2.50 |      $0.625 |      $0.05 |
+| `claude-haiku-4-5`                             |    $1 |     $5 |       $1.25 |      $0.10 |
+| `claude-fable-5`                               |   $10 |    $50 |      $12.50 |      $1.00 |
+| `claude-fable-5-1`                             |   $10 |    $50 |      $12.50 |      $0.25 |
 
 There is no family fallback: an unknown model id has no price rather than borrowing a
 guess. Its cost reads **Unavailable** (logged once per model so a missing row gets
@@ -204,7 +209,14 @@ more than earlier ones.
 - **Individuals.** Every Pokémon gets persistent IVs, gender, ability, level (5 at hatch, 100
   at graduation) and its last four level-up moves. Click a Pokédex cell for its detail page:
   actual stats, species data and the complete move list, from PokéAPI.
-- **Unown** hatches as one of its 28 letters; uncollected letters are twice as likely.
+- **Forms.** Species with alternate forms that all have an animated Black/White sprite
+  (Unown's 28 letters, Castform, Deoxys, Burmy/Wormadam, Cherrim, Shellos/Gastrodon, Rotom,
+  Giratina, Shaymin, Arceus, Basculin, Darmanitan, Deerling/Sawsbuck, the forces of nature,
+  Kyurem, Keldeo, Meloetta, Genesect) hatch in one of them; uncollected forms are twice as
+  likely. The form is drawn once for the whole line, so a Darumaka egg already knows its
+  Darmanitan, and a species without it shows its default (a Sandy Burmy becomes Mothim).
+  The Pokédex counts forms per species (`3/4`) and the detail page lists them all. Types,
+  stats and moves stay the default form's.
 - **Difficulty.** Settings has two multipliers, 10%–200%: growth (egg and stage
   thresholds) and shop prices. Changing growth keeps the fraction you have earned and never
   evolves or hatches on the spot. It is a preference, not part of the save.
@@ -284,8 +296,9 @@ Sprites are proxied and cached, so the browser only ever talks to this server �
 works offline once a sprite has been seen. Animated Gen-V art only exists up to national
 dex #649; beyond that it falls back to the static PNG automatically.
 
-Parsed log entries are cached per file, keyed on mtime and size. A cold scan of 82 session
-files takes ~0.8s; warm scans are ~25ms.
+Parsed log entries are cached per file, keyed on mtime and size. A file that only grew is
+read on from where the last scan stopped, so the active session is never re-parsed from the
+start. A cold scan of 82 session files takes ~0.8s; warm scans are ~25ms.
 
 ## API
 

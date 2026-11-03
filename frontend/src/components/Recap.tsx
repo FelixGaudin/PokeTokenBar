@@ -146,7 +146,7 @@ function RecapCard({ recap, state }: { recap: RecapView; state: StateView }) {
           <Sprite
             speciesId={active.species_id}
             shiny={active.is_shiny}
-            form={active.unown_form}
+            form={active.form}
             animated={false}
             size={18}
             alt={active.name}
@@ -165,7 +165,7 @@ function RecapCard({ recap, state }: { recap: RecapView; state: StateView }) {
                   <Sprite
                     speciesId={g.species_id}
                     shiny={g.is_shiny}
-                    form={g.unown_form}
+                    form={g.form}
                     animated={false}
                     size={18}
                     alt=""

@@ -68,25 +68,43 @@
 
 .rangeRow__item.home__monthItem {
   position: relative;
-  padding-right: 44px;
+  padding-right: 100px;
 }
 
+/* A labelled capsule, so the only way into the recaps reads as a button. */
 .home__recapBtn {
   position: absolute;
   top: 50%;
   right: 8px;
   transform: translateY(-50%);
-  display: grid;
-  place-items: center;
-  width: 30px;
-  height: 30px;
-  padding: 0;
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  height: 28px;
+  padding: 0 10px 0 8px;
   border: 1px solid var(--line);
-  border-radius: 8px;
+  border-radius: 999px;
   background: var(--panel);
   color: var(--text-dim);
+  font: inherit;
+  font-size: 12px;
   cursor: pointer;
   transition: color 0.15s, border-color 0.15s;
+}
+
+/* Too narrow for the label: keep the icon, the tooltip and the accessible name. */
+@media (max-width: 620px) {
+  .rangeRow__item.home__monthItem {
+    padding-right: 44px;
+  }
+
+  .home__recapBtn {
+    padding: 0 6px;
+  }
+
+  .home__recapLabel {
+    display: none;
+  }
 }
 
 .home__recapBtn:hover {
@@ -97,6 +115,12 @@
 .home__types {
   display: flex;
   margin: 4px 0 6px;
+}
+
+.home__formNote {
+  margin: -2px 0 6px;
+  font-size: 12px;
+  color: var(--text-dim);
 }
 
 /* ---------------------------------------------------------------- growth bars */

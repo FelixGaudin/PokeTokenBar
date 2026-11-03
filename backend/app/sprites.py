@@ -12,7 +12,8 @@ from pathlib import Path
 
 import httpx
 
-from .balance import has_animated_sprite, sprite_name
+from . import forms
+from .balance import has_animated_sprite
 
 log = logging.getLogger(__name__)
 
@@ -27,18 +28,18 @@ class SpriteStore:
 
     @staticmethod
     def cache_key(species_id: int, *, animated: bool, shiny: bool, form: str | None = None) -> str:
-        # Unown A keeps the legacy key; other letters get their own file.
-        name = sprite_name(species_id, form)
+        # A default form keeps the plain key, so caches from before forms stay valid.
+        name = forms.sprite_name(species_id, form)
         return f"{name}-{'sh' if shiny else ''}{'a' if animated else 's'}"
 
     def _sprite_url(
         self, species_id: int, *, animated: bool, shiny: bool, form: str | None = None
     ) -> str:
-        name = sprite_name(species_id, form)
         shiny_part = "shiny/" if shiny else ""
         if animated:
-            return f"{SPRITE_BASE}/versions/generation-v/black-white/animated/{shiny_part}{name}.gif"
-        return f"{SPRITE_BASE}/{shiny_part}{name}.png"
+            folder = f"{SPRITE_BASE}/versions/generation-v/black-white/animated/{shiny_part}"
+            return f"{folder}{forms.sprite_name(species_id, form)}.gif"
+        return f"{SPRITE_BASE}/{shiny_part}{forms.static_sprite_name(species_id, form)}.png"
 
     async def pokemon(
         self,

@@ -40,7 +40,10 @@ class ActiveView(BaseModel):
     # Shiny or legendary: sending it off asks twice.
     is_high_value: bool = False
     level: int | None = None
-    unown_form: str | None = None
+    # The individual's form for its whole line; sprites resolve it per species.
+    form: str | None = None
+    # The current species shows a non-default form, whose data is the default form's.
+    shows_alternate_form: bool = False
 
 
 class EggView(BaseModel):
@@ -231,10 +234,20 @@ class DexEntryView(BaseModel):
     nature_label: str | None
     caught_at: str | None
     level: int | None = None
-    unown_form: str | None = None
+    form: str | None = None
     chain: list[DexChainSpecies] = Field(default_factory=list)
     # Every stored name of every species in the chain, for multilingual search.
     search_names: list[str] = Field(default_factory=list)
+
+
+class SpeciesFormView(BaseModel):
+    """One of a species' forms, collected or not. Shiny ownership is tracked per form."""
+
+    form: str
+    label: str
+    is_shiny: bool = False
+    has_normal: bool = False
+    is_raising: bool = False
 
 
 class DexSpeciesView(BaseModel):
@@ -250,14 +263,8 @@ class DexSpeciesView(BaseModel):
     is_raising: bool
     first_caught_at: str | None
     search_names: list[str] = Field(default_factory=list)
-
-
-class UnownFormView(BaseModel):
-    form: str
-    symbol: str
-    is_shiny: bool
-    has_normal: bool
-    is_raising: bool
+    # Every form of a species that has several, default first; empty otherwise.
+    forms: list[SpeciesFormView] = Field(default_factory=list)
 
 
 class CollectionView(BaseModel):
@@ -265,7 +272,6 @@ class CollectionView(BaseModel):
     counts_by_rarity: dict[str, int] = Field(default_factory=dict)
     catch_log: list[DexEntryView] = Field(default_factory=list)
     pokedex: list[DexSpeciesView] = Field(default_factory=list)
-    unown_forms: list[UnownFormView] = Field(default_factory=list)
 
 
 class StatView(BaseModel):
@@ -301,7 +307,7 @@ class IndividualView(BaseModel):
     nature_label: str | None
     ability_name: str | None
     ability_is_hidden: bool
-    unown_form: str | None = None
+    form: str | None = None
     stats: list[StatView] = Field(default_factory=list)
     stat_scale: int = 300
     moves: list[KnownMoveView] = Field(default_factory=list)
@@ -337,7 +343,7 @@ class RecapGraduateView(BaseModel):
     species_id: int
     name: str
     is_shiny: bool
-    unown_form: str | None = None
+    form: str | None = None
 
 
 class RecapView(BaseModel):
@@ -367,6 +373,7 @@ class SnapshotView(BaseModel):
     lifetime_tokens: int
     current_species_id: int | None
     current_is_shiny: bool
+    current_form: str | None = None
 
 
 class MetaView(BaseModel):
