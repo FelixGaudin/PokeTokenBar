@@ -332,6 +332,7 @@ edge-triggered candy grants, and pricing.
 ## Attribution
 
 A port of [PokeTokenBar](https://github.com/chattymin/PokeTokenBar) by chattymin (MIT).
+Released under the same MIT license — see [LICENSE](LICENSE).
 
 Unofficial, non-commercial fan project. No affiliation with Nintendo, Game Freak,
 Creatures Inc. or The Pokémon Company. Pokémon data and sprites are fetched from
