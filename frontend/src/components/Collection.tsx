@@ -6,7 +6,7 @@ import {
   DEX_SORTS,
   LOG_SORT_DEFAULT,
   LOG_SORTS,
-  UNOWN_ID,
+  collectedForms,
   filterEntries,
   filterSpecies,
   sortEntries,
@@ -17,7 +17,7 @@ import {
 } from "../lib/dex";
 import { DexLink, Panel, RarityBadge, ShinyBadge, Sprite } from "./Primitives";
 import { PokemonDetail } from "./PokemonDetail";
-import type { DexEntryView, DexSpeciesView, Rarity, StateView, UnownFormView } from "../types";
+import type { DexEntryView, DexSpeciesView, Rarity, StateView } from "../types";
 
 const RARITIES: Rarity[] = ["legendary", "rare", "uncommon", "common"];
 const PAGE_SIZE = 16;
@@ -49,6 +49,8 @@ export function Collection({
   const logKey = `${query}|${shinyOnly}|${rarity}|${logSort}`;
   const logRef = useRef<HTMLDivElement>(null);
   const lastLogKey = useRef(logKey);
+  // The catch log row whose link opened the detail page; Back scrolls it into view once.
+  const returnRow = useRef<string | null>(null);
 
   useEffect(() => {
     if (logKey === lastLogKey.current) return;
@@ -56,6 +58,13 @@ export function Collection({
     const el = logRef.current;
     if (el && el.getBoundingClientRect().top < 0) el.scrollIntoView({ behavior: "smooth" });
   }, [logKey]);
+
+  useEffect(() => {
+    if (openId !== null || tab !== "log" || returnRow.current === null) return;
+    const row = logRef.current?.querySelector(`[data-entry="${CSS.escape(returnRow.current)}"]`);
+    returnRow.current = null;
+    row?.scrollIntoView({ block: "center" });
+  }, [openId, tab]);
 
   if (collection.catch_log.length === 0) {
     return (
@@ -70,9 +79,12 @@ export function Collection({
   }
 
   const switchTab = (next: Tab) => {
+    returnRow.current = null;
     setTab(next);
     onOpen(null);
   };
+
+  const filters: DexFilters = { rarity, shinyOnly, query };
 
   const segmented = (
     <div className="segmented" role="tablist">
@@ -103,16 +115,22 @@ export function Collection({
         <PokemonDetail
           key={opened.species_id}
           species={opened}
-          unownForms={collection.unown_forms}
           entries={collection.catch_log}
           language={lang}
-          onBack={() => onOpen(null)}
+          onBack={() => {
+            // Land on the grid page that shows this species, also when it was opened from Home.
+            if (tab === "pokedex") {
+              const dex = sortSpecies(filterSpecies(collection.pokedex, filters), dexSort, lang);
+              const index = dex.findIndex((s) => s.species_id === opened.species_id);
+              setPageState({ key: dexKey, page: index < 0 ? 0 : Math.floor(index / PAGE_SIZE) });
+            }
+            onOpen(null);
+          }}
         />
       </div>
     );
   }
 
-  const filters: DexFilters = { rarity, shinyOnly, query };
   const resetFilters = () => {
     setQuery("");
     setShinyOnly(false);
@@ -246,12 +264,7 @@ export function Collection({
             <>
               <WheelPagedGrid page={page} pages={pages} onPage={setPage}>
                 {slice.map((s) => (
-                  <DexCell
-                    key={s.species_id}
-                    species={s}
-                    unownForms={collection.unown_forms}
-                    onOpen={() => onOpen(s.species_id)}
-                  />
+                  <DexCell key={s.species_id} species={s} onOpen={() => onOpen(s.species_id)} />
                 ))}
                 {Array.from({ length: fillers }, (_, i) => (
                   <span key={`filler-${i}`} className="collCell collCell--filler" aria-hidden="true" />
@@ -306,7 +319,15 @@ export function Collection({
           ) : (
             <div className="collLog">
               {log.map((entry) => (
-                <LogRow key={entry.id} entry={entry} dexIds={dexIds} onOpen={onOpen} />
+                <LogRow
+                  key={entry.id}
+                  entry={entry}
+                  dexIds={dexIds}
+                  onOpen={(speciesId) => {
+                    returnRow.current = entry.id;
+                    onOpen(speciesId);
+                  }}
+                />
               ))}
             </div>
           )}
@@ -382,19 +403,14 @@ function WheelPagedGrid({
   );
 }
 
-function DexCell({
-  species,
-  unownForms,
-  onOpen,
-}: {
-  species: DexSpeciesView;
-  unownForms: UnownFormView[];
-  onOpen: () => void;
-}) {
-  const isUnown = species.species_id === UNOWN_ID;
-  const form: UnownFormView | undefined = isUnown ? unownForms[0] : undefined;
+function DexCell({ species, onOpen }: { species: DexSpeciesView; onOpen: () => void }) {
+  const collected = collectedForms(species.forms);
+  const form = collected[0];
   const shiny = form ? !form.has_normal : species.is_shiny;
-  const caption = isUnown ? `${species.name} ${unownForms.length}/28` : species.name;
+  const caption =
+    species.forms.length > 0
+      ? `${species.name} ${collected.length}/${species.forms.length}`
+      : species.name;
   const tooltip = [
     `#${species.species_id} ${species.name}`,
     titleCase(species.rarity),
@@ -440,7 +456,7 @@ function LogRow({
   onOpen: (speciesId: number) => void;
 }) {
   return (
-    <article className="collRow">
+    <article className="collRow" data-entry={entry.id}>
       <header className="collRow__head">
         <RarityBadge rarity={entry.rarity} />
         {entry.is_shiny && <ShinyBadge />}
@@ -469,7 +485,7 @@ function LogRow({
                 shiny={entry.is_shiny}
                 animated={false}
                 size={68}
-                form={sp.species_id === UNOWN_ID ? entry.unown_form : null}
+                form={entry.form}
                 alt=""
               />
               <span className="collRow__name">{sp.name}</span>

@@ -1,8 +1,13 @@
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { spriteUrl } from "../lib/api";
 import { tokens } from "../lib/format";
 import { slugLabel } from "../lib/dex";
 import type { Rarity } from "../types";
+
+/** Wait before retrying a failed sprite: 2, 4, 8, 16 s, then every 30 s. */
+function retryDelay(attempt: number): number {
+  return Math.min(2000 * 2 ** attempt, 30_000);
+}
 
 export function Sprite({
   speciesId,
@@ -19,11 +24,12 @@ export function Sprite({
   size?: number;
   alt?: string;
   className?: string;
-  /** Unown letter; ignored for every other species. */
+  /** The individual's form; species without it show their default. */
   form?: string | null;
 }) {
   const [failed, setFailed] = useState(false);
   const [fellBack, setFellBack] = useState(false);
+  const [attempt, setAttempt] = useState(0);
   const key = `${speciesId}-${shiny}-${animated}-${form ?? ""}`;
   const [seenKey, setSeenKey] = useState(key);
   if (seenKey !== key) {
@@ -31,7 +37,31 @@ export function Sprite({
     setSeenKey(key);
     setFailed(false);
     setFellBack(false);
+    setAttempt(0);
   }
+
+  const preferred = spriteUrl(speciesId, { animated, shiny, form });
+  const degraded = failed || fellBack;
+  useEffect(() => {
+    if (!degraded) return;
+    // A failed download is usually transient: keep the fallback on screen, retry the
+    // preferred image in the background and swap it in once it has loaded.
+    let probe: HTMLImageElement | null = null;
+    const timer = window.setTimeout(() => {
+      probe = new Image();
+      probe.onload = () => {
+        setFailed(false);
+        setFellBack(false);
+        setAttempt(0);
+      };
+      probe.onerror = () => setAttempt((a) => a + 1);
+      probe.src = preferred;
+    }, retryDelay(attempt));
+    return () => {
+      window.clearTimeout(timer);
+      if (probe) probe.onload = probe.onerror = null;
+    };
+  }, [degraded, attempt, preferred]);
 
   if (failed) {
     return (

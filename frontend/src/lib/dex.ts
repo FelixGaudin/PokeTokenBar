@@ -1,4 +1,4 @@
-import type { DexEntryView, DexSpeciesView, Rarity } from "../types";
+import type { DexEntryView, DexSpeciesView, Rarity, SpeciesFormView } from "../types";
 
 export type DexSort = "numberAsc" | "numberDesc" | "nameAsc" | "nameDesc" | "rarityDesc";
 export type LogSort =
@@ -194,12 +194,7 @@ export function moveMethodsText(methods: { method: string; level: number }[]): s
 
 export const UNOWN_ID = 201;
 
-export const UNOWN_FORMS: { form: string; symbol: string }[] = [
-  ..."abcdefghijklmnopqrstuvwxyz".split("").map((c) => ({ form: c, symbol: c.toUpperCase() })),
-  { form: "exclamation", symbol: "!" },
-  { form: "question", symbol: "?" },
-];
-
-export function unownSymbol(form: string | null | undefined): string | null {
-  return UNOWN_FORMS.find((f) => f.form === form)?.symbol ?? null;
+/** Forms collected in either colour, in catalogue order. */
+export function collectedForms(forms: SpeciesFormView[]): SpeciesFormView[] {
+  return forms.filter((f) => f.has_normal || f.is_shiny);
 }

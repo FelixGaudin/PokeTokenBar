@@ -12,6 +12,7 @@ import logging
 import threading
 import time
 import urllib.error
+import urllib.parse
 import urllib.request
 from collections.abc import Callable
 from typing import Any
@@ -87,7 +88,7 @@ class StateClient:
         self._stop = threading.Event()
         self._wake = threading.Event()
         self._thread: threading.Thread | None = None
-        self._sprites: dict[tuple[int, bool, bool], bytes] = {}
+        self._sprites: dict[tuple[int, bool, bool, str | None], bytes] = {}
         self._sprites_lock = threading.Lock()
         self._inflight: set[tuple[int, bool, bool]] = set()
 
@@ -153,10 +154,11 @@ class StateClient:
         *,
         animated: bool,
         shiny: bool,
+        form: str | None,
         on_ready: Callable[[bytes], None],
     ) -> bytes | None:
         """Return cached sprite bytes, or fetch in the background and call on_ready."""
-        key = (species_id, animated, shiny)
+        key = (species_id, animated, shiny, form)
         with self._sprites_lock:
             cached = self._sprites.get(key)
             if cached is not None:
@@ -167,9 +169,10 @@ class StateClient:
 
         def work() -> None:
             try:
-                data = self._get_bytes(
-                    f"/api/sprite/{species_id}?animated={int(animated)}&shiny={int(shiny)}"
-                )
+                query = f"animated={int(animated)}&shiny={int(shiny)}"
+                if form:
+                    query += f"&form={urllib.parse.quote(form)}"
+                data = self._get_bytes(f"/api/sprite/{species_id}?{query}")
             except (urllib.error.URLError, OSError, TimeoutError) as exc:
                 log.debug("sprite %s failed: %s", species_id, exc)
                 with self._sprites_lock:

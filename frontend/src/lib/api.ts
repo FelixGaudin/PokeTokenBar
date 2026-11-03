@@ -83,9 +83,8 @@ export function spriteUrl(
   const params = new URLSearchParams();
   params.set("animated", String(opts.animated ?? true));
   params.set("shiny", String(opts.shiny ?? false));
-  // Unown A shares the plain sprite, so only other letters get a parameter; that
-  // keeps one URL per image and lets the browser cache dedupe.
-  if (opts.form && opts.form !== "a") params.set("form", opts.form);
+  // The individual's form for its line; the server shows the species' own version of it.
+  if (opts.form) params.set("form", opts.form);
   return `/api/sprite/${speciesId}?${params.toString()}`;
 }
 

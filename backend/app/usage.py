@@ -101,6 +101,18 @@ class UsageSnapshot:
         return "blazing"
 
 
+@dataclass
+class _CachedFile:
+    mtime: float
+    size: int
+    # Bytes parsed so far: a file that only grew is read on from here.
+    offset: int
+    # Entries before reported cost, so a newer ledger in the tail can be re-applied.
+    raw: list[Entry]
+    cost_state: dict[str, float] | None
+    entries: list[Entry]
+
+
 def start_of_month(d: date) -> date:
     return d.replace(day=1)
 
@@ -132,13 +144,13 @@ class UsageService:
     """Scans the log roots and caches parsed entries per file.
 
     A file's parsed entries are reused until its mtime or size changes, so a refresh
-    only re-reads sessions that actually grew.
+    only re-reads sessions that actually grew — and of those, only the appended tail.
     """
 
     def __init__(self, roots: list[Path], tz: ZoneInfo) -> None:
         self.roots = roots
         self.tz = tz
-        self._cache: dict[Path, tuple[float, int, list[Entry]]] = {}
+        self._cache: dict[Path, _CachedFile] = {}
 
     def _files(self):
         """Every session file with the root it belongs to; a file is listed once."""
@@ -166,13 +178,31 @@ class UsageService:
             # Files untouched since the window opened can only hold older entries,
             # but a cached parse is free — reuse it rather than dropping the file.
             cached = self._cache.get(path)
-            if cached is not None and cached[0] == st.st_mtime and cached[1] == st.st_size:
-                collected.extend(cached[2])
+            if cached is not None and cached.mtime == st.st_mtime and cached.size == st.st_size:
+                collected.extend(cached.entries)
                 continue
             if st.st_mtime < modified_since and cached is None:
                 continue
-            entries = [replace(e, root=root) for e in cc.parse_file(path, self.tz)]
-            self._cache[path] = (st.st_mtime, st.st_size, entries)
+            # Logs are append-only: a file that only grew is read on from the last offset.
+            # A same-size rewrite or a truncation is read again from the start.
+            prior: _CachedFile | None = None
+            if cached is not None and cached.size < st.st_size and cached.offset <= st.st_size:
+                prior = cached
+            tail = cc.parse_file_from(path, self.tz, prior.offset if prior else 0)
+            if tail is None:
+                # Unreadable for now: keep the last good parse and retry next refresh.
+                if cached is not None:
+                    collected.extend(cached.entries)
+                continue
+            raw = [replace(e, root=root) for e in tail.entries]
+            cost_state = tail.cost_state
+            if prior is not None:
+                raw = cc.dedupe_keep_max(prior.raw + raw)
+                cost_state = cost_state or prior.cost_state
+            entries = cc.apply_reported_cost(raw, cost_state) if cost_state else raw
+            self._cache[path] = _CachedFile(
+                st.st_mtime, st.st_size, tail.offset, raw, cost_state, entries
+            )
             collected.extend(entries)
             scanned += 1
 

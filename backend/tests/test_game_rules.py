@@ -1,9 +1,11 @@
+import json
 import math
 from datetime import UTC, datetime, timedelta
 
 import pytest
 
 from app import balance as B
+from app import forms
 from app.balance import ItemKind, Rarity
 from app.companion import CandyWindow, CompanionService
 from app.pokeapi import BaseSpecies, EvoLine, EvoNode
@@ -575,23 +577,88 @@ def test_snapshots_hide_a_disguised_dittos_shininess(tmp_path):
     assert [s.current_is_shiny for s in store.list_snapshots()] == [True, False]
 
 
-# ---------------------------------------------------------------- unown
+# ---------------------------------------------------------------- forms
 
 
-def test_unown_letters_weigh_two_until_collected():
-    rolls = [B.roll_unown_form(r, set()) for r in range(56)]
+UNOWN = forms.forms_of(forms.UNOWN_SPECIES_ID)
+
+
+def test_uncollected_forms_weigh_two_until_collected():
+    rolls = [forms.roll(r, UNOWN, set()) for r in range(56)]
     assert rolls[:4] == ["a", "a", "b", "b"] and rolls[-2:] == ["question", "question"]
-    assert B.roll_unown_form(56, set()) == "a"
-    everything = set(B.UNOWN_FORMS)
-    assert [B.roll_unown_form(r, everything) for r in range(28)] == B.UNOWN_FORMS
+    assert forms.roll(56, UNOWN, set()) == "a"
+    assert [forms.roll(r, UNOWN, set(UNOWN)) for r in range(28)] == UNOWN
+    assert [forms.roll(r, ["land", "sky"], {"land"}) for r in range(3)] == ["land", "sky", "sky"]
 
 
-def test_unown_names_and_sprites():
-    assert B.display_name("Unown", 201, "b") == "Unown [B]"
-    assert B.display_name("Unown", 201, None) == "Unown [A]"
-    assert B.display_name("Pikachu", 25, "b") == "Pikachu"
-    assert B.sprite_name(201, "a") == "201" and B.sprite_name(201, "question") == "201-question"
-    assert B.resolve_unown_form(201, "future-form") == "a"
+def test_a_form_belongs_to_the_line_and_resolves_per_species():
+    assert forms.line_forms(412) == ["plant", "sandy", "trash"]
+    # Cherubi has no forms of its own, but its egg already knows its Cherrim.
+    assert forms.line_forms(420) == ["overcast", "sunshine"]
+    assert forms.resolve(420, "sunshine") is None and forms.resolve(421, "sunshine") == "sunshine"
+    # Mothim keeps a single appearance whatever the Burmy was.
+    assert forms.resolve(414, "sandy") is None and forms.resolve(413, "sandy") == "sandy"
+    assert forms.line_forms(1) == [] and forms.resolve_line(1, "sky") is None
+    # Records from before a line had forms read as its default: old Unown saves keep A.
+    assert forms.resolve_line(201, None) == "a"
+    assert forms.resolve_line(479, "future-form") == "normal"
+
+
+def test_a_form_is_collected_once_every_species_showing_it_is_owned():
+    assert forms.collected_line_forms(412, {(412, "sandy")}) == set()
+    assert forms.collected_line_forms(412, {(412, "sandy"), (413, "sandy")}) == {"sandy"}
+    assert forms.collected_line_forms(201, {(201, "b")}) == {"b"}
+
+
+def test_form_names_and_sprites():
+    assert forms.display_name("Unown", 201, "b") == "Unown [B]"
+    assert forms.display_name("Unown", 201, None) == "Unown [A]"
+    assert forms.display_name("Shaymin", 492, "sky", "Sky Forme") == "Shaymin [Sky Forme]"
+    assert forms.display_name("Shaymin", 492, "land", "Land Forme") == "Shaymin"
+    assert forms.display_name("Shaymin", 492, "sky") == "Shaymin"
+    assert forms.display_name("Pikachu", 25, "b") == "Pikachu"
+    assert forms.sprite_name(201, "a") == "201"
+    assert forms.sprite_name(201, "question") == "201-question"
+    # Forms that are separate PokéAPI varieties keep their static PNG under that id.
+    assert forms.sprite_name(492, "sky") == "492-sky"
+    assert forms.static_sprite_name(492, "sky") == "10006"
+    assert forms.static_sprite_name(412, "sandy") == "412-sandy"
+    assert forms.static_sprite_name(414, "sandy") == "414"
+
+
+def test_form_labels_prefer_the_cached_localized_name():
+    names = {10064: {"en": "Sky Forme", "fr": "Forme Céleste", "ja": "スカイフォルム"}}
+    assert forms.label(492, "sky", "fr", names.get) == "Forme Céleste"
+    assert forms.label(492, "sky", "ja-Hrkt", names.get) == "スカイフォルム"
+    assert forms.label(492, "sky", "ko", names.get) == "Sky Forme"
+    assert forms.label(550, "blue-striped", "en", names.get) == "Blue Striped"
+    assert forms.label(201, "question", "en", names.get) == "?"
+    # Castform, Rotom, Kyurem and Genesect have no official name for their usual look.
+    assert forms.label(479, "normal", "de", names.get) == "Normalform"
+    assert forms.label(479, "normal", "it", names.get) == "Normal Form"
+    assert forms.label(25, None, "en", names.get) is None
+
+
+def test_saves_written_before_other_species_had_forms_still_load(tmp_path):
+    path = tmp_path / "state.json"
+    path.write_text(
+        '{"active": {"base_id": 201, "current_id": 201, "path_ids": [201], "unown_form": "q"},'
+        ' "dex": [{"base_id": 201, "final_id": 201, "chain_order": [201]},'
+        '         {"base_id": 479, "final_id": 479, "chain_order": [479]}]}'
+    )
+    store = StateStore(path)
+    assert store.state.active.form == "q"
+    assert [e.form for e in store.state.dex] == ["a", "normal"]
+    store.save()
+    saved = json.loads(path.read_text())
+    assert saved["active"]["form"] == "q" and "unown_form" not in saved["active"]
+
+
+def test_snapshots_carry_the_current_form(tmp_path):
+    store = StateStore(tmp_path / "state.json")
+    store.state.active = MonState(base_id=492, current_id=492, path_ids=[492], form="sky")
+    assert store.create_snapshot(datetime(2026, 10, 1, tzinfo=UTC)).current_form == "sky"
+    assert store.list_snapshots()[0].current_form == "sky"
 
 
 async def test_an_unown_hatch_keeps_its_letter_through_graduation(tmp_path):
@@ -599,11 +666,41 @@ async def test_an_unown_hatch_keeps_its_letter_through_graduation(tmp_path):
     svc = make(tmp_path, {201: unown}, index=[BaseSpecies(201, 225)])
     await feed(svc, 1_000)
     await feed(svc, 1_000 + B.EGG_HATCH_THRESHOLD)
-    form = svc.state.active.unown_form
-    assert form in B.UNOWN_FORMS
+    form = svc.state.active.form
+    assert form in UNOWN
     await feed(svc, 50 * B.graduation_total(Rarity.UNCOMMON))
-    assert svc.state.dex[0].unown_form == form
-    assert svc.collected_unown_forms() == {form}
+    assert svc.state.dex[0].form == form
+    assert svc.owned_forms() == {(201, form)}
+
+
+async def test_a_form_drawn_on_a_formless_base_shows_after_evolving(tmp_path):
+    names = {420: {"en": "Cherubi"}, 421: {"en": "Cherrim"}}
+    cherubi = EvoLine(420, EvoNode(420, [EvoNode(421)]), Rarity.COMMON, names)
+    svc = make(tmp_path, {420: cherubi}, index=[BaseSpecies(420, 190)])
+    svc.poke.form_names_by_id[10038] = {"en": "Sunshine Form"}
+    await feed(svc, 1_000)
+    await feed(svc, 1_000 + B.EGG_HATCH_THRESHOLD)
+    assert svc.state.active.form in ("overcast", "sunshine")
+    svc.state.active.form = "sunshine"
+    await feed(svc, 50 * B.graduation_total(Rarity.COMMON))
+    assert svc.state.dex[0].form == "sunshine"
+    assert svc.just_graduated == "Cherrim [Sunshine Form]"
+    assert svc.owned_forms() == {(421, "sunshine")}
+
+
+async def test_a_revealed_ditto_drops_the_disguises_form(tmp_path):
+    burmy = EvoLine(412, EvoNode(412, [EvoNode(413)]), Rarity.COMMON, {412: {"en": "Burmy"}})
+    svc = make(
+        tmp_path,
+        {412: burmy, B.DITTO_SPECIES_ID: ditto_line()},
+        index=[BaseSpecies(412, 120)],
+        rng=AlwaysDisguiseRNG(7),
+    )
+    await feed(svc, 1_000)
+    await feed(svc, 1_000 + B.EGG_HATCH_THRESHOLD)
+    assert svc.state.active.ditto_disguise == 412 and svc.state.active.form is not None
+    await feed(svc, 1_000 + B.EGG_HATCH_THRESHOLD + B.phase_threshold(Rarity.COMMON, 2, 0))
+    assert svc.state.active.ditto_revealed and svc.state.active.form is None
 
 
 def test_a_jittering_reset_marker_does_not_regrant():

@@ -125,6 +125,7 @@ export function Settings({
 
   const [snapshots, setSnapshots] = useState<SnapshotView[] | null>(null);
   const [snapshotBusy, setSnapshotBusy] = useState(false);
+  const [snapshotsOpen, setSnapshotsOpen] = useState(false);
 
   const loadSnapshots = useCallback(async () => {
     try {
@@ -355,7 +356,22 @@ export function Settings({
           {snapshots === null ? null : snapshots.length === 0 ? (
             <p className="empty snapshots__empty">No snapshots saved yet</p>
           ) : (
-            <ul className="snapshots__list">
+            <button
+              type="button"
+              className="snapshots__toggle"
+              aria-expanded={snapshotsOpen}
+              aria-controls="snapshot-list"
+              onClick={() => setSnapshotsOpen((open) => !open)}
+            >
+              <span className="snapshots__chevron" aria-hidden="true">
+                {snapshotsOpen ? "▾" : "▸"}
+              </span>
+              {snapshotsOpen ? "Hide" : "Show"} {snapshots.length}{" "}
+              {snapshots.length === 1 ? "snapshot" : "snapshots"}
+            </button>
+          )}
+          {snapshotsOpen && snapshots !== null && snapshots.length > 0 && (
+            <ul id="snapshot-list" className="snapshots__list">
               {snapshots.map((snap) => (
                 <li key={snap.id} className="snapshot">
                   <span className="snapshot__mon" aria-hidden="true">
@@ -363,6 +379,7 @@ export function Settings({
                       <Sprite
                         speciesId={snap.current_species_id}
                         shiny={snap.current_is_shiny}
+                        form={snap.current_form}
                         animated={false}
                         size={28}
                       />

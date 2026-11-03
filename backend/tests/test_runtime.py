@@ -92,6 +92,57 @@ async def test_detail_lists_final_form_individuals_only(rt):
     assert (await rt.pokemon_detail(2)).individuals == []
 
 
+async def test_pokedex_cells_list_every_form_with_per_form_ownership(rt):
+    from app.state import migrate_profiles
+
+    state = rt.store.state
+    rt.poke.details[413] = slowpoke()
+    rt.poke.form_names_by_id[10034] = {"en": "Sandy Cloak", "fr": "Cape Sable"}
+    state.language = "fr"
+    state.dex += [
+        DexEntry(id="s", base_id=412, final_id=414, chain_order=[412, 414], form="sandy"),
+        DexEntry(id="t", base_id=412, final_id=413, chain_order=[412, 413], form="trash",
+                 is_shiny=True),
+        DexEntry(id="u", base_id=201, final_id=201, chain_order=[201]),
+    ]
+    migrate_profiles(state)
+    species = {s.species_id: s for s in rt.build_state().collection.pokedex}
+
+    burmy = {f.form: f for f in species[412].forms}
+    assert list(burmy) == ["plant", "sandy", "trash"]
+    assert burmy["sandy"].has_normal and burmy["sandy"].label == "Cape Sable"
+    assert burmy["trash"].is_shiny and not burmy["trash"].has_normal
+    assert not (burmy["plant"].has_normal or burmy["plant"].is_shiny)
+    # Mothim has a single appearance; an entry without a letter is an Unown A.
+    assert species[414].forms == []
+    unown = {f.form: f for f in species[201].forms if f.has_normal}
+    assert list(unown) == ["a"] and unown["a"].label == "A"
+
+    trash = await rt.pokemon_detail(413, "trash")
+    assert [i.id for i in trash.individuals] == ["t"] and trash.individuals[0].form == "trash"
+    assert (await rt.pokemon_detail(413, "sandy")).individuals == []
+
+
+def test_form_names_and_sprite_urls_follow_pokeapi_naming(tmp_path):
+    from app.pokeapi import parse_form_names
+    from app.sprites import SpriteStore
+
+    raw = {"form_names": [
+        {"language": {"name": "ja-hrkt"}, "name": "スカイフォルム"},
+        {"language": {"name": "en"}, "name": "Sky Forme"},
+        {"language": {"name": "it"}, "name": "Forma Cielo"},
+    ]}
+    assert parse_form_names(raw) == {"ja-Hrkt": "スカイフォルム", "en": "Sky Forme"}
+
+    store = SpriteStore(tmp_path)
+    url = store._sprite_url
+    assert url(492, animated=True, shiny=False, form="sky").endswith("/animated/492-sky.gif")
+    assert url(492, animated=False, shiny=True, form="sky").endswith("/pokemon/shiny/10006.png")
+    assert url(412, animated=False, shiny=False, form="sandy").endswith("/pokemon/412-sandy.png")
+    assert url(414, animated=True, shiny=False, form="sandy").endswith("/animated/414.gif")
+    assert store.cache_key(492, animated=True, shiny=False, form="land") == "492-a"
+
+
 async def test_refresh_records_the_ledger_and_takes_a_snapshot(rt, tmp_path):
     rt.store.state.used_since_install = 1
     await rt.refresh()

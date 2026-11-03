@@ -3,7 +3,8 @@
 Rates are declared per million tokens for readability. Cache-write rates use the
 5-minute TTL multiplier; cache reads are whatever the pricing page lists (0.1x input
 for most models, less for the newest ones). Current Claude models serve their 1M
-context at standard rates, so there is no long-context tier here.
+context at standard rates, except Haiku 5.5: a request whose prompt (input, cache
+writes and cache reads together) is over 100,000 tokens pays its higher rates.
 
 There is deliberately no family fallback: a model id containing "opus" is not
 evidence that it shares another model's price. An unknown id has no price, and its
@@ -41,24 +42,32 @@ _SONNET_4 = ModelRate.per_million(3, 15, 3.75, 0.3)
 TABLE: dict[str, ModelRate] = {
     "claude-opus-5-5": ModelRate.per_million(4, 20, 5, 0.2),
     "claude-opus-5": _OPUS,
-    "claude-sonnet-5-5": ModelRate.per_million(2, 10, 2.5, 0.2),
+    "claude-sonnet-5-5": ModelRate.per_million(2, 10, 2.5, 0.1),
     "claude-sonnet-5": ModelRate.per_million(2, 10, 2.5, 0.2),
     "claude-fable-5-1": ModelRate.per_million(10, 50, 12.5, 0.25),
     "claude-fable-5": ModelRate.per_million(10, 50, 12.5, 1.0),
     "claude-opus-4-8": _OPUS,
     "claude-opus-4-7": _OPUS,
     "claude-opus-4-6": _OPUS,
+    "claude-opus-4-5-20251101": _OPUS,
     "claude-sonnet-4-6": _SONNET_4,
     "claude-sonnet-4-5-20250929": _SONNET_4,
     "claude-sonnet-4-20250514": _SONNET_4,
     "claude-opus-4-20250514": ModelRate.per_million(15, 75, 18.75, 1.5),
+    "claude-haiku-5-5": ModelRate.per_million(0.1, 0.5, 0.125, 0.01),
     "claude-haiku-4-5-20251001": ModelRate.per_million(1, 5, 1.25, 0.1),
+}
+
+# Prompt length (in tokens) above which a request is billed at the second rate.
+LONG_PROMPT: dict[str, tuple[int, ModelRate]] = {
+    "claude-haiku-5-5": (100_000, ModelRate.per_million(0.5, 2.5, 0.625, 0.05)),
 }
 
 _ALIASES = {
     "claude-sonnet-4": "claude-sonnet-4-20250514",
     "claude-opus-4": "claude-opus-4-20250514",
     "claude-sonnet-4-5": "claude-sonnet-4-5-20250929",
+    "claude-opus-4-5": "claude-opus-4-5-20251101",
     "claude-haiku-4-5": "claude-haiku-4-5-20251001",
 }
 
@@ -83,9 +92,14 @@ def estimated_cost(
     model: str, *, input: int, output: int, cache_write: int, cache_read: int
 ) -> float | None:
     """Table price of one request, or None when the model has no verified rate."""
-    r = TABLE.get(model_key(model))
+    key = model_key(model)
+    r = TABLE.get(key)
     if r is None or min(input, output, cache_write, cache_read) < 0:
         return None
+    if key in LONG_PROMPT:
+        threshold, long_rate = LONG_PROMPT[key]
+        if input + cache_write + cache_read > threshold:
+            r = long_rate
     # A zero write rate means "no supported write rate", not "free".
     if cache_write != 0 and r.cache_write == 0:
         return None

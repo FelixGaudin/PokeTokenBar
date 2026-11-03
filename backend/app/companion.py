@@ -16,6 +16,7 @@ from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta, timezone
 
 from . import balance as B
+from . import forms
 from .balance import ItemKind, Rarity
 from .pokeapi import EvoLine, EvoNode, PokeAPIClient
 from .profile import MAX_TOKEN_VALUE, PokemonProfile
@@ -92,6 +93,7 @@ class CompanionService:
         self._revealing_ditto = False
         self._loading_line = False
         self._details_failed_at: dict[int, float] = {}
+        self._form_names_failed_at: dict[int, float] = {}
         # Bumped whenever the active subject is replaced, so an in-flight network
         # fetch can tell that its result is stale and discard it.
         self._generation = 0
@@ -165,15 +167,44 @@ class CompanionService:
         prefix = f"{base_id}:"
         return any(c.startswith(prefix) for c in self.state.collected_finals)
 
-    def collected_unown_forms(self) -> set[str]:
-        forms: set[str] = set()
-        for entry in self.state.dex:
-            if B.UNOWN_SPECIES_ID in entry.chain_order:
-                forms.add(B.resolve_unown_form(B.UNOWN_SPECIES_ID, entry.unown_form) or "a")
+    def owned_forms(self) -> set[tuple[int, str]]:
+        """(species, form) pairs reached by any recorded or active Pokémon, shiny or not."""
+        owned: set[tuple[int, str]] = set()
+        chains = [(e.chain_order, e.form) for e in self.state.dex]
         a = self.state.active
-        if a is not None and B.UNOWN_SPECIES_ID in a.path_ids[: a.stage_index + 1]:
-            forms.add(B.resolve_unown_form(B.UNOWN_SPECIES_ID, a.unown_form) or "a")
-        return forms
+        if a is not None:
+            chains.append((a.path_ids[: a.stage_index + 1], a.form))
+        for chain, form in chains:
+            for sid in chain:
+                resolved = forms.resolve(sid, form)
+                if resolved is not None:
+                    owned.add((sid, resolved))
+        return owned
+
+    def form_label(self, species_id: int, form: str | None) -> str | None:
+        return forms.label(species_id, form, self.state.language, self.poke.cached_form_names)
+
+    def form_display_name(self, name: str, species_id: int, form: str | None) -> str:
+        return forms.display_name(name, species_id, form, self.form_label(species_id, form))
+
+    async def _warm_form_names(self, base_id: int, form: str | None) -> None:
+        """Cache the names this individual's form adds to its titles across the line."""
+        for sid in forms.form_species(base_id):
+            resource = forms.name_resource(sid, form)
+            if (
+                resource is None
+                or forms.is_default(sid, form)
+                or self.poke.cached_form_names(resource) is not None
+            ):
+                continue
+            failed_at = self._form_names_failed_at.get(resource)
+            if failed_at is not None and time.monotonic() - failed_at < DETAILS_RETRY_SECONDS:
+                continue
+            try:
+                await self.poke.form_names(resource)
+            except Exception as exc:  # noqa: BLE001 - names are enrichment, never required
+                self._form_names_failed_at[resource] = time.monotonic()
+                log.info("form names %d unavailable (%s)", resource, exc)
 
     # ------------------------------------------------------------------
     # refresh — ledger and progression
@@ -237,6 +268,8 @@ class CompanionService:
             await self._reveal_ditto()
 
         await self._warm_active_details()
+        if state.active is not None:
+            await self._warm_form_names(state.active.base_id, state.active.form)
 
         self.display_state = self._compute_display_state(
             burn_tier=burn_tier,
@@ -360,11 +393,13 @@ class CompanionService:
             a.stage_index += 1
             a.used_at_stage -= threshold  # overflow carries into the next stage
             self._enrich_active()
-            name = B.display_name(
-                line.display_name(nxt.species_id, state.language), nxt.species_id, a.unown_form
+            name = self.form_display_name(
+                line.display_name(nxt.species_id, state.language), nxt.species_id, a.form
             )
             self.just_evolved_to = name
-            self._fire_event("evolve", name=name, shiny=a.is_shiny, species_id=nxt.species_id)
+            self._fire_event(
+                "evolve", name=name, shiny=a.is_shiny, species_id=nxt.species_id, form=a.form
+            )
 
         self._reconcile_profile_growth()
         self.save()
@@ -486,7 +521,6 @@ class CompanionService:
                     state.egg_tier.value,
                 )
                 state.egg_prefetch_base_id = None
-                state.pending_unown_form = None
                 self.hatch_retry_delayed = True
                 self.save()
                 return
@@ -497,7 +531,6 @@ class CompanionService:
             state.egg_usage = 0
             state.egg_tier = None  # the guarantee is consumed by this hatch
             state.egg_prefetch_base_id = None
-            state.pending_unown_form = None
 
             # The odds shown are the ones this roll actually used.
             odds = B.shiny_denominator(self.owns_shiny_charm)
@@ -513,9 +546,14 @@ class CompanionService:
             ):
                 ditto_disguise = line.base_id
             profile = PokemonProfile.generate(self._rng.getrandbits(64))
-            unown_form = (
-                B.roll_unown_form(self._rng.getrandbits(64), self.collected_unown_forms())
-                if line.base_id == B.UNOWN_SPECIES_ID
+            line_forms = forms.line_forms(line.base_id)
+            form = (
+                forms.roll(
+                    self._rng.getrandbits(64),
+                    line_forms,
+                    forms.collected_line_forms(line.base_id, self.owned_forms()),
+                )
+                if line_forms
                 else None
             )
 
@@ -537,7 +575,7 @@ class CompanionService:
                 # the hidden branch choice.
                 has_growth_boost=self.has_collected_final(line.base_id),
                 profile=profile,
-                unown_form=unown_form,
+                form=form,
             )
             self._enrich_active()
             # A disguise hides its shininess until the reveal.
@@ -552,14 +590,15 @@ class CompanionService:
                 ditto_disguise is not None,
                 state.active.has_growth_boost,
             )
+            await self._warm_form_names(line.base_id, form)
             self._fire_event(
                 "hatch",
-                name=B.display_name(
-                    line.display_name(line.base_id, state.language), line.base_id, unown_form
+                name=self.form_display_name(
+                    line.display_name(line.base_id, state.language), line.base_id, form
                 ),
                 shiny=show_shiny,
                 species_id=line.base_id,
-                form=unown_form,
+                form=form,
                 odds=odds,
             )
             if overflow > 0:
@@ -686,6 +725,7 @@ class CompanionService:
             m.total_forms = len(plan)
             m.used_at_stage = carry_over
             m.ditto_revealed = True
+            m.form = forms.resolve_line(ditto_line.base_id, m.form)
             # The hatch boost came from the disguise's line; only a repeat Ditto keeps one.
             m.has_growth_boost = self.has_collected_final(ditto_line.base_id)
             if m.profile is not None:
@@ -746,7 +786,7 @@ class CompanionService:
                 nature=a.nature,
                 names=self._names_for(a.path_ids),
                 profile=a.profile,
-                unown_form=a.unown_form,
+                form=a.form,
             )
         )
         name = (
@@ -754,11 +794,9 @@ class CompanionService:
             if self.current_line
             else f"#{final_id}"
         )
-        name = B.display_name(name, final_id, a.unown_form)
+        name = self.form_display_name(name, final_id, a.form)
         self.just_graduated = name
-        self._fire_event(
-            "graduate", name=name, shiny=a.is_shiny, species_id=final_id, form=a.unown_form
-        )
+        self._fire_event("graduate", name=name, shiny=a.is_shiny, species_id=final_id, form=a.form)
 
         state.active = None
         self._generation += 1
@@ -785,7 +823,7 @@ class CompanionService:
             nature=a.nature,
             names=self._names_for(chain),
             profile=a.profile,
-            unown_form=a.unown_form,
+            form=a.form,
         )
 
     # ------------------------------------------------------------------
@@ -1001,7 +1039,6 @@ class CompanionService:
         state.egg_usage = 0
         state.egg_tier = tier
         state.egg_prefetch_base_id = None
-        state.pending_unown_form = None
         self.save()
 
     def candy_stage_costs(self) -> list[int]:

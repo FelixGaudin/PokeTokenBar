@@ -113,7 +113,7 @@ class PetWindow(Gtk.Window):
         self.state: dict[str, Any] | None = None
         self.error: str | None = None
         self.sprite: Sprite | None = None
-        self._sprite_key: tuple[int, bool, bool] | None = None
+        self._sprite_key: tuple[int, bool, bool, str | None] | None = None
         self._shape_key: tuple[int, int, int] | None = None
         self._next_frame_at = 0.0
         self._started = time.monotonic()
@@ -293,16 +293,25 @@ class PetWindow(Gtk.Window):
             self.sprite = None
             self._sprite_key = None
             return
-        key = (int(active["species_id"]), bool(self.config.get("animated", True)), bool(active["is_shiny"]))
+        key = (
+            int(active["species_id"]),
+            bool(self.config.get("animated", True)),
+            bool(active["is_shiny"]),
+            active.get("form"),
+        )
         if key == self._sprite_key and self.sprite is not None:
             return
         data = self.client.sprite(
-            key[0], animated=key[1], shiny=key[2], on_ready=lambda raw: self._install_sprite(key, raw)
+            key[0],
+            animated=key[1],
+            shiny=key[2],
+            form=key[3],
+            on_ready=lambda raw: self._install_sprite(key, raw),
         )
         if data is not None:
             self._install_sprite(key, data)
 
-    def _install_sprite(self, key: tuple[int, bool, bool], data: bytes) -> None:
+    def _install_sprite(self, key: tuple[int, bool, bool, str | None], data: bytes) -> None:
         try:
             self.sprite = Sprite(data)
         except (ValueError, GLib.Error) as exc:

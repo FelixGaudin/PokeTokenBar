@@ -231,6 +231,7 @@ def _snapshot_view(s) -> SnapshotView:
         lifetime_tokens=s.lifetime_tokens,
         current_species_id=s.current_species_id,
         current_is_shiny=s.current_is_shiny,
+        current_form=s.current_form,
     )
 
 

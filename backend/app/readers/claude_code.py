@@ -265,31 +265,59 @@ def apply_reported_cost(entries: list[Entry], cost_by_model: dict[str, float]) -
     return out
 
 
-def parse_file(path: Path, tz: ZoneInfo) -> list[Entry]:
-    """Parse one session file, de-duplicated within the file."""
+@dataclass
+class ParsedTail:
+    """One read of a session file, de-duplicated but before reported cost is applied."""
+
+    entries: list[Entry]
+    # Absolute byte offset just past the last complete line.
+    offset: int
+    # The last usable cost-state ledger in the bytes read.
+    cost_state: dict[str, float] | None
+
+
+def parse_file_from(path: Path, tz: ZoneInfo, offset: int = 0) -> ParsedTail | None:
+    """Parse a session file from byte `offset`; None if it cannot be read.
+
+    Session logs are append-only and the active one can run to hundreds of MB, so a
+    refresh only needs the bytes after the previous read. A trailing line without a
+    newline may still be being written: it is parsed now but left out of the returned
+    offset, so the next read picks it up again and de-duplication absorbs the repeat.
+    """
     out: list[Entry] = []
-    # The ledger is cumulative, so the last usable one in the file wins.
+    # The ledger is cumulative, so the last usable one wins.
     cost_state: dict[str, float] | None = None
+    consumed = offset
     try:
-        with path.open("r", encoding="utf-8", errors="replace") as fh:
-            for line in fh:
-                if '"cost-state"' in line:
-                    parsed = parse_cost_state_line(line)
+        with path.open("rb") as fh:
+            fh.seek(offset)
+            for raw in fh:
+                if raw.endswith(b"\n"):
+                    consumed += len(raw)
+                if b'"cost-state"' in raw:
+                    parsed = parse_cost_state_line(raw.decode("utf-8", errors="replace"))
                     if parsed is not None:
                         cost_state = parsed
                     continue
                 # Cheap pre-filter: most lines are user turns or tool results.
-                if '"usage"' not in line or '"assistant"' not in line:
+                if b'"usage"' not in raw or b'"assistant"' not in raw:
                     continue
-                entry = parse_line(line, tz)
+                entry = parse_line(raw.decode("utf-8", errors="replace"), tz)
                 if entry is not None:
                     out.append(entry)
     except OSError:
+        return None
+    return ParsedTail(dedupe_keep_max(out), consumed, cost_state)
+
+
+def parse_file(path: Path, tz: ZoneInfo) -> list[Entry]:
+    """Parse one whole session file, de-duplicated within the file."""
+    parsed = parse_file_from(path, tz)
+    if parsed is None:
         return []
-    entries = dedupe_keep_max(out)
-    if cost_state:
-        entries = apply_reported_cost(entries, cost_state)
-    return entries
+    if parsed.cost_state:
+        return apply_reported_cost(parsed.entries, parsed.cost_state)
+    return parsed.entries
 
 
 def jsonl_files(roots: Iterable[Path], modified_since: float | None = None) -> Iterator[Path]:
