@@ -15,32 +15,41 @@ from datetime import datetime, timezone
 import httpx
 
 from . import balance as B
-from . import forms
+from . import dex_progress, forms
 from .accounts import AccountFolder, discover, parse_entries
+from .agent import AgentRelay
 from .balance import ItemKind, Rarity
-from .companion import CandyWindow, CompanionService
+from .companion import CandyWindow, CompanionEvent, CompanionService
 from .config import Settings
 from .limits import LimitsProvider, LimitStatus, LimitsUnavailable
 from .pokeapi import PokeAPIClient, resolve_name
 from .profile import STAT_KEYS, PokemonDetails, PokemonProfile, actual_stat, stat_bar_scale
 from .readers.claude_code import PROVIDER_ID, CostCoverage
-from .recap import make_recap, merge_ledger, prune_ledger
+from .recap import activity_grid, current_streak, make_recap, merge_ledger, prune_ledger
 from .schemas import (
     AbilityView,
     AccountLimitsView,
     ActiveView,
+    ActivityCellView,
+    ActivityView,
+    AgentEventView,
+    AgentFeedView,
     BagItemView,
     BlockView,
     CandyPreviewView,
     ChainSlot,
     CollectionView,
+    CompanionEventView,
     CompanionView,
     CostCoverageView,
     DayPoint,
+    DexBadgeView,
     DexChainSpecies,
     DexEntryView,
+    DexProgressView,
     DexSpeciesView,
     EggView,
+    GrowthView,
     IndividualView,
     KnownMoveView,
     LimitsView,
@@ -53,23 +62,28 @@ from .schemas import (
     RecapBucketView,
     RecapGraduateView,
     RecapView,
+    RegionProgressView,
     ShopEggView,
     ShopItemView,
     ShopView,
     SpeciesFormView,
     StateView,
     StatView,
+    StreakView,
     UsageView,
     WalletView,
 )
 from .sprites import SpriteStore
-from .state import DexEntry, MonState, PreferenceStore, StateStore
-from .usage import PeriodUsage, UsageService, UsageSnapshot
+from .state import DexEntry, MonState, PreferenceStore, SaveState, StateStore
+from .usage import DayUsage, PeriodUsage, UsageService, UsageSnapshot
 
 log = logging.getLogger(__name__)
 
 # A window at or above this percentage makes the Pokémon look worn out.
 CRIT_THRESHOLD = 95.0
+
+# Idle time reported when the scan found no usage at all: long enough to sulk.
+RECENT_USE_WINDOW = 7 * 24 * 3600.0
 
 # Ceiling on the exponential limits backoff, so it always recovers eventually.
 LIMITS_MAX_BACKOFF = 1800.0
@@ -120,7 +134,7 @@ class AccountLimits:
             identity = self.provider.fallback_identity()
             if identity is None:
                 return self.fallback_title
-            email, org = identity
+            email, org = identity.email, identity.org
         else:
             email, org = s.account_email, s.account_org
         # Team plans read best as the organisation; personal plans as the email.
@@ -144,6 +158,7 @@ class AppRuntime:
             provider=LimitsProvider(settings.credentials_file, settings.default_claude_json),
         )
         self.extra_accounts: list[AccountLimits] = []
+        self.agent = AgentRelay()
 
         self.snapshot: UsageSnapshot | None = None
         self.last_refresh: datetime | None = None
@@ -253,6 +268,7 @@ class AppRuntime:
                 burn_tier=snapshot.burn_tier,
                 limit_warning=limit_warning,
                 has_usage_data=has_source,
+                time_since_last_usage=_time_since(snapshot) if has_source else None,
             )
 
             if loaded:
@@ -322,9 +338,11 @@ class AppRuntime:
         for account in self.accounts:
             account.alias_of = None
             s = account.status
-            identity = (s.account_email, s.account_org) if s and s.account_email else (
-                account.provider.fallback_identity()
-            )
+            if s and s.account_email:
+                identity: tuple[str, str | None] | None = (s.account_email, s.account_org)
+            else:
+                saved = account.provider.fallback_identity()
+                identity = (saved.email, saved.org) if saved else None
             if identity is None:
                 continue
             key = f"{identity[0]}\n{identity[1] or ''}"
@@ -365,7 +383,7 @@ class AppRuntime:
 
     # -- view building -----------------------------------------------------
 
-    def build_state(self) -> StateView:
+    def build_state(self, agent_after: int | None = None) -> StateView:
         prefs = self.prefs.prefs
         return StateView(
             companion=self._companion_view(),
@@ -395,6 +413,20 @@ class AppRuntime:
                 difficulty_max=B.DIFFICULTY_MAX,
                 limit_display=prefs.limit_display,
                 crit_threshold=CRIT_THRESHOLD,
+                daily_trend_window=prefs.daily_trend_window,
+                activity_view=prefs.activity_view,
+                growth_in_title=prefs.growth_in_title,
+                always_faces_back=prefs.always_faces_back,
+            ),
+            agent=AgentFeedView(
+                epoch=self.agent.epoch,
+                latest_seq=self.agent.latest_seq,
+                events=[
+                    AgentEventView(seq=e.seq, state=e.state, label=e.label, message=e.message)
+                    for e in self.agent.after(agent_after)
+                ]
+                if agent_after is not None
+                else [],
             ),
         )
 
@@ -433,6 +465,7 @@ class AppRuntime:
             tokens_to_hatch=max(0, hatch_at - state.egg_usage),
             guaranteed_tier=state.egg_tier,
             hatch_delayed=self.companion.hatch_retry_delayed,
+            prayers=state.egg_prayers.count if state.egg_prayers else 0,
         )
 
         active_view: ActiveView | None = None
@@ -491,19 +524,48 @@ class AppRuntime:
                 shows_alternate_form=not forms.is_default(a.current_id, a.form),
             )
 
+        growth = self.companion.growth()
         return CompanionView(
             display_state=self.companion.display_state,
             egg=egg,
             active=active_view,
-            event=self.companion.take_event(),
+            events=[_event_view(e) for e in self.companion.recent_events()],
             just_evolved_to=self.companion.just_evolved_to,
             just_graduated=self.companion.just_graduated,
+            growth=GrowthView(kind=growth.kind, percent=growth.percent),
+            faces_back=a is not None
+            and (self.prefs.prefs.always_faces_back or self.companion.display_state == "sulk"),
+            sulk_idle_seconds=self.companion.sulk_idle,
+        )
+
+    def _history_views(self, month: list[DayUsage]) -> tuple[ActivityView, StreakView]:
+        """The 16-week grid and the current streak, from the ledger and this month's scan."""
+        state = self.store.state
+        today = datetime.now(self.settings.timezone).date()
+        grid = activity_grid(state, [(d.date, d.total_tokens) for d in month], today)
+        streak = current_streak(state, today)
+        return (
+            ActivityView(
+                weeks=[
+                    [
+                        ActivityCellView(
+                            date=c.date, tokens=c.tokens, in_range=c.in_range, level=c.level
+                        )
+                        for c in week
+                    ]
+                    for week in grid.weeks
+                ],
+                peak=grid.peak,
+                used_days=grid.used_days,
+            ),
+            StreakView(days=streak.days, includes_today=streak.includes_today),
         )
 
     def _usage_view(self) -> UsageView:
         snapshot = self.snapshot
         if snapshot is None:
             empty = PeriodView(total_tokens=0, cost=0.0)
+            activity, streak = self._history_views([])
             return UsageView(
                 today_date=datetime.now(self.settings.timezone).strftime("%Y-%m-%d"),
                 today=empty,
@@ -512,6 +574,8 @@ class AppRuntime:
                 block=None,
                 burn_per_minute=0.0,
                 burn_tier="idle",
+                activity=activity,
+                streak=streak,
             )
 
         def period(p: PeriodUsage) -> PeriodView:
@@ -539,6 +603,18 @@ class AppRuntime:
             else None
         )
 
+        def days(series: list[DayUsage]) -> list[DayPoint]:
+            return [
+                DayPoint(
+                    date=d.date,
+                    total_tokens=d.total_tokens,
+                    cost=d.cost,
+                    cost_coverage=_coverage(d.coverage),
+                )
+                for d in series
+            ]
+
+        activity, streak = self._history_views(snapshot.month_daily)
         return UsageView(
             today_date=snapshot.today_date,
             today=period(snapshot.today),
@@ -547,15 +623,10 @@ class AppRuntime:
             block=block,
             burn_per_minute=snapshot.burn_per_minute,
             burn_tier=snapshot.burn_tier,
-            month_daily=[
-                DayPoint(
-                    date=d.date,
-                    total_tokens=d.total_tokens,
-                    cost=d.cost,
-                    cost_coverage=_coverage(d.coverage),
-                )
-                for d in snapshot.month_daily
-            ],
+            month_daily=days(snapshot.month_daily),
+            rolling_daily=days(snapshot.rolling_daily),
+            activity=activity,
+            streak=streak,
             scanned_files=snapshot.scanned_files,
         )
 
@@ -867,6 +938,7 @@ class AppRuntime:
             counts_by_rarity=counts,
             catch_log=catch_log,
             pokedex=sorted(species.values(), key=lambda s: s.species_id),
+            dex_progress=_dex_progress_view(state),
         )
 
     # -- detail page -------------------------------------------------------
@@ -899,7 +971,8 @@ class AppRuntime:
         wanted_form = forms.resolve(species_id, form) if form else None
 
         def add(entry_id: str, is_active: bool, profile: PokemonProfile, shiny: bool,
-                nature: str | None, caught_at: datetime | None, line_form: str | None) -> None:
+                nature: str | None, caught_at: datetime | None, line_form: str | None,
+                prayers: int) -> None:
             resolved = forms.resolve(species_id, line_form)
             if wanted_form is not None and resolved != wanted_form:
                 return
@@ -940,6 +1013,7 @@ class AppRuntime:
                             KnownMoveView(name=m.name, learned_at_level=m.learned_at_level)
                             for m in profile.moves
                         ],
+                        prayers=prayers,
                     ),
                 )
             )
@@ -958,6 +1032,7 @@ class AppRuntime:
                     entry.nature,
                     entry.caught_at,
                     entry.form,
+                    entry.prayers.count if entry.prayers else 0,
                 )
         # Newest first.
         individuals.sort(key=lambda kv: kv[0], reverse=True)
@@ -976,6 +1051,7 @@ class AppRuntime:
                     a.nature,
                     None,
                     a.form,
+                    a.prayers.count if a.prayers else 0,
                 )
                 if len(individuals) > before:
                     individuals.insert(0, individuals.pop())
@@ -1015,6 +1091,66 @@ class AppRuntime:
             graduated=[_graduate_view(e, lang) for e in r.graduated[:4]],
             can_go_back=r.can_go_back,
         )
+
+
+def _time_since(snapshot: UsageSnapshot) -> float:
+    if snapshot.last_usage is None:
+        return RECENT_USE_WINDOW
+    return max(0.0, (snapshot.generated_at - snapshot.last_usage).total_seconds())
+
+
+def _event_view(e: CompanionEvent) -> CompanionEventView:
+    return CompanionEventView(
+        seq=e.seq,
+        kind=e.kind,
+        at=e.at.isoformat(),
+        text=e.text,
+        title=e.title,
+        name=e.name,
+        shiny=e.shiny,
+        species_id=e.species_id,
+        form=e.form,
+        odds=e.odds,
+        disguise_name=e.disguise_name,
+        badge=e.badge,
+    )
+
+
+def _dex_progress_view(state: SaveState) -> DexProgressView:
+    owned = dex_progress.owned_species(state)
+    unown = dex_progress.unown_forms(state)
+    national = dex_progress.completion(dex_progress.NATIONAL, owned)
+    return DexProgressView(
+        regions=[
+            RegionProgressView(
+                key=c.region.key,
+                name=c.region.name,
+                first=c.region.first,
+                last=c.region.last,
+                owned=c.owned,
+                shiny_owned=c.shiny_owned,
+                total=c.total,
+                is_complete=c.is_complete,
+                is_shiny_complete=c.is_shiny_complete,
+            )
+            for c in dex_progress.region_completions(owned)
+        ],
+        national_owned=national.owned,
+        national_shiny_owned=national.shiny_owned,
+        national_total=national.total,
+        unown_forms=unown,
+        unown_total=dex_progress.UNOWN_TOTAL,
+        badges=[
+            DexBadgeView(
+                key=b.key,
+                kind=b.kind,
+                region=b.region.key if b.region else None,
+                emoji=b.emoji,
+                label=b.label,
+            )
+            for b in dex_progress.earned_badges(owned, unown)
+        ],
+    )
 
 
 def _graduate_view(e: DexEntry, lang: str) -> RecapGraduateView:

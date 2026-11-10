@@ -16,8 +16,13 @@ import logging
 import warnings
 
 import cairo
-from . import gtk3  # noqa: F401  (pins GI versions)
+
+# isort: off
+from . import gtk3  # noqa: F401  (pins GI versions; must precede gi.repository)
 from gi.repository import GdkPixbuf
+
+# isort: on
+from .petting import anchor_fraction, opaque_top_fraction
 
 log = logging.getLogger(__name__)
 
@@ -59,6 +64,7 @@ class Sprite:
         self._index = 0
         self._learning = self.is_animated
         self._scaled: dict[tuple[int, int], GdkPixbuf.Pixbuf] = {}
+        self._top_fraction: float | None = None
 
         if self._iter is not None:
             first = self._iter.get_pixbuf()
@@ -118,6 +124,28 @@ class Sprite:
         self._iter = None  # release the decoder
         self._index = 0
 
+    def opaque_top_fraction(self) -> float:
+        """Where the art visibly starts, as a fraction of the frame height.
+
+        The median over the frames, so a frame that jumps to the canvas top does not
+        lift whatever is anchored to it. Cached once the loop has been learned; until
+        then it covers the frames seen so far.
+        """
+        if self._top_fraction is not None:
+            return self._top_fraction
+        frames = [self._static] if self._static is not None else [f for f, _ in self._frames]
+        fractions = [
+            opaque_top_fraction(
+                f.get_pixels(), f.get_width(), f.get_height(), f.get_rowstride(), f.get_n_channels()
+            )
+            for f in frames
+            if f.get_has_alpha()
+        ]
+        result = anchor_fraction(fractions)
+        if not self._learning:
+            self._top_fraction = result
+        return result
+
     # ------------------------------------------------------------------- drawing
 
     def scaled(self, size: int) -> GdkPixbuf.Pixbuf:
@@ -146,7 +174,9 @@ class Sprite:
         return x, max(0, y)
 
 
-def alpha_region(pixbuf: GdkPixbuf.Pixbuf, offset_x: int, offset_y: int, threshold: int = 24) -> cairo.Region:
+def alpha_region(
+    pixbuf: GdkPixbuf.Pixbuf, offset_x: int, offset_y: int, threshold: int = 24
+) -> cairo.Region:
     """Region covering the sprite's opaque pixels, for the window's input shape.
 
     Shaping input to the artwork rather than the window box is what lets clicks in the

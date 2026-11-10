@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from typing import Literal
+
 from pydantic import BaseModel, Field
 
 from .balance import Rarity
@@ -54,15 +56,48 @@ class EggView(BaseModel):
     guaranteed_tier: Rarity | None = None
     # Ready, but the last hatch attempt failed for an external reason.
     hatch_delayed: bool = False
+    # Prayers said over this egg (from the floating pet). Cosmetic.
+    prayers: int = 0
+
+
+class CompanionEventView(BaseModel):
+    """A recent event. Clients show each `seq` once; reading never consumes it."""
+
+    seq: int
+    kind: Literal["hatch", "evolve", "graduate", "ditto_reveal", "dex_completion"]
+    at: str
+    # One line, as the floating pet pops it.
+    text: str
+    title: str | None = None
+    name: str | None = None
+    shiny: bool = False
+    species_id: int | None = None
+    form: str | None = None
+    odds: int | None = None
+    disguise_name: str | None = None
+    badge: str | None = None
+
+
+class GrowthView(BaseModel):
+    """Integer percent toward hatching, or toward the next evolution or graduation."""
+
+    kind: Literal["hatch", "growth"]
+    percent: int
 
 
 class CompanionView(BaseModel):
     display_state: str
     egg: EggView
     active: ActiveView | None
-    event: dict | None = None
+    # The last couple of minutes, oldest first.
+    events: list[CompanionEventView] = Field(default_factory=list)
     just_evolved_to: str | None = None
     just_graduated: str | None = None
+    growth: GrowthView
+    # Shown from behind: sulking, or the "Show back view" preference.
+    faces_back: bool = False
+    # Seconds without usage while sulking, else 0.
+    sulk_idle_seconds: float = 0.0
 
 
 class CostCoverageView(BaseModel):
@@ -100,6 +135,30 @@ class DayPoint(BaseModel):
     cost_coverage: CostCoverageView = Field(default_factory=CostCoverageView)
 
 
+class StreakView(BaseModel):
+    # Consecutive days with usage; the UI shows it from 2.
+    days: int
+    # False while today has no usage yet: the run holds, today's first use extends it.
+    includes_today: bool
+
+
+class ActivityCellView(BaseModel):
+    date: str
+    tokens: int
+    # False before recording began or after today: drawn as nothing.
+    in_range: bool
+    # 0 for an unused day, then quartiles of the peak (1-4).
+    level: int
+
+
+class ActivityView(BaseModel):
+    """The 16-week grid: Monday-first week columns, oldest first, the last holds today."""
+
+    weeks: list[list[ActivityCellView]] = Field(default_factory=list)
+    peak: int = 0
+    used_days: int = 0
+
+
 class UsageView(BaseModel):
     today_date: str
     today: PeriodView
@@ -110,6 +169,10 @@ class UsageView(BaseModel):
     burn_tier: str
     # This month, from the 1st through today, empty days included.
     month_daily: list[DayPoint] = Field(default_factory=list)
+    # The last 21 days through today, empty days included.
+    rolling_daily: list[DayPoint] = Field(default_factory=list)
+    activity: ActivityView = Field(default_factory=ActivityView)
+    streak: StreakView = Field(default_factory=lambda: StreakView(days=0, includes_today=False))
     scanned_files: int = 0
 
 
@@ -267,11 +330,43 @@ class DexSpeciesView(BaseModel):
     forms: list[SpeciesFormView] = Field(default_factory=list)
 
 
+class RegionProgressView(BaseModel):
+    key: str
+    name: str
+    first: int
+    last: int
+    owned: int
+    shiny_owned: int
+    total: int
+    is_complete: bool
+    is_shiny_complete: bool
+
+
+class DexBadgeView(BaseModel):
+    key: str
+    kind: Literal["region", "regionShiny", "unown", "national", "nationalShiny"]
+    region: str | None = None
+    emoji: str
+    label: str
+
+
+class DexProgressView(BaseModel):
+    regions: list[RegionProgressView] = Field(default_factory=list)
+    national_owned: int = 0
+    national_shiny_owned: int = 0
+    national_total: int = 0
+    unown_forms: int = 0
+    unown_total: int = 0
+    # Every badge earned, in announcement order.
+    badges: list[DexBadgeView] = Field(default_factory=list)
+
+
 class CollectionView(BaseModel):
     total: int
     counts_by_rarity: dict[str, int] = Field(default_factory=dict)
     catch_log: list[DexEntryView] = Field(default_factory=list)
     pokedex: list[DexSpeciesView] = Field(default_factory=list)
+    dex_progress: DexProgressView = Field(default_factory=DexProgressView)
 
 
 class StatView(BaseModel):
@@ -311,6 +406,8 @@ class IndividualView(BaseModel):
     stats: list[StatView] = Field(default_factory=list)
     stat_scale: int = 300
     moves: list[KnownMoveView] = Field(default_factory=list)
+    # Prayers its egg received.
+    prayers: int = 0
 
 
 class AbilityView(BaseModel):
@@ -397,6 +494,26 @@ class MetaView(BaseModel):
     difficulty_max: float = 2.0
     limit_display: str = "used"
     crit_threshold: float = 95.0
+    daily_trend_window: Literal["7d", "14d", "21d", "month"] = "14d"
+    activity_view: Literal["monthlyBars", "recentHeatmap"] = "monthlyBars"
+    growth_in_title: bool = False
+    always_faces_back: bool = False
+
+
+class AgentEventView(BaseModel):
+    seq: int
+    state: Literal["working", "waiting", "done", "idle"]
+    label: str | None = None
+    message: str | None = None
+
+
+class AgentFeedView(BaseModel):
+    """Coding-agent events for the floating pet. A new epoch means the backend restarted."""
+
+    epoch: str
+    latest_seq: int
+    # Only with `?agent_after=N`: events after N, oldest first.
+    events: list[AgentEventView] = Field(default_factory=list)
 
 
 class StateView(BaseModel):
@@ -408,6 +525,7 @@ class StateView(BaseModel):
     shop: ShopView
     collection: CollectionView
     meta: MetaView
+    agent: AgentFeedView
 
 
 class LanguageRequest(BaseModel):
@@ -421,6 +539,33 @@ class DifficultyRequest(BaseModel):
 
 class LimitDisplayRequest(BaseModel):
     mode: str
+
+
+class TrendWindowRequest(BaseModel):
+    window: str
+
+
+class ActivityViewRequest(BaseModel):
+    view: str
+
+
+class ToggleRequest(BaseModel):
+    enabled: bool
+
+
+class AgentEventRequest(BaseModel):
+    state: str
+    label: str | None = None
+    message: str | None = None
+
+
+class AgentAccepted(BaseModel):
+    accepted: bool
+    seq: int
+
+
+class PrayerResult(BaseModel):
+    count: int
 
 
 class UseCandyRequest(BaseModel):

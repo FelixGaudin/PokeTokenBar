@@ -12,15 +12,17 @@ import math
 import random
 import time
 import uuid
+from collections import deque
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta, timezone
+from typing import NamedTuple
 
 from . import balance as B
-from . import forms
+from . import dex_progress, forms
 from .balance import ItemKind, Rarity
 from .pokeapi import EvoLine, EvoNode, PokeAPIClient
 from .profile import MAX_TOKEN_VALUE, PokemonProfile
-from .state import DexEntry, MonState, PreferenceStore, SaveState, StateStore
+from .state import DexEntry, MonState, PrayerRecord, PreferenceStore, SaveState, StateStore
 
 log = logging.getLogger(__name__)
 
@@ -30,9 +32,39 @@ _DEFAULT_RNG = random.SystemRandom()
 
 # How long a hatch / evolve / graduate flourish stays on screen.
 EVENT_WINDOW = timedelta(seconds=6)
+# Recent events stay readable this long, so every client polling /api/state sees each
+# one. A take-once slot went to whichever client polled first.
+EVENT_FEED_TTL = timedelta(minutes=2)
+EVENT_FEED_MAX = 16
 
 # A failed PokéAPI details fetch is retried after this long, not on every tick.
 DETAILS_RETRY_SECONDS = 300.0
+
+
+@dataclass(frozen=True)
+class CompanionEvent:
+    """A hatch, evolution, graduation, Ditto reveal or Pokédex completion."""
+
+    seq: int
+    kind: str  # "hatch" | "evolve" | "graduate" | "ditto_reveal" | "dex_completion"
+    at: datetime
+    # One line, as the floating pet pops it.
+    text: str
+    title: str | None = None
+    name: str | None = None
+    shiny: bool = False
+    species_id: int | None = None
+    form: str | None = None
+    # Shiny odds denominator the hatch actually rolled with.
+    odds: int | None = None
+    disguise_name: str | None = None
+    # The completion badge's key, for dex_completion.
+    badge: str | None = None
+
+
+class Growth(NamedTuple):
+    kind: str  # "hatch" for the egg, "growth" once hatched
+    percent: int
 
 
 @dataclass(frozen=True)
@@ -85,8 +117,16 @@ class CompanionService:
         self.display_state = "egg"
         self.just_evolved_to: str | None = None
         self.just_graduated: str | None = None
-        self.event: dict | None = None
+        # The latest lifecycle event, while it still makes the companion celebrate.
+        self.event: CompanionEvent | None = None
         self.event_until: datetime | None = None
+        self._events: deque[CompanionEvent] = deque(maxlen=EVENT_FEED_MAX)
+        self._event_seq = 0
+        # Sulking: idle seconds while sulking, else 0. The scan's last-usage time lags a
+        # refresh behind, so a rise in today's total observed here counts as usage too.
+        self.sulk_idle = 0.0
+        self._last_seen_today: tuple[str, int] | None = None
+        self._last_observed_usage: datetime | None = None
         # The egg is ready but the last hatch attempt failed for an external reason.
         self.hatch_retry_delayed = False
         self._hatching = False
@@ -97,6 +137,9 @@ class CompanionService:
         # Bumped whenever the active subject is replaced, so an in-flight network
         # fetch can tell that its result is stale and discard it.
         self._generation = 0
+        # Completions earned before this feature existed are not news.
+        if dex_progress.seed_completions(self.state):
+            self.store.save()
 
     # ------------------------------------------------------------------
     # convenience accessors
@@ -107,6 +150,9 @@ class CompanionService:
         return self.store.state
 
     def save(self) -> None:
+        # Every change of ownership is saved through here, so a completion is caught at once.
+        for badge in dex_progress.check_completions(self.state):
+            self._announce("dex_completion", badge.body, title=badge.title, badge=badge.key)
         self.store.save()
 
     @property
@@ -169,17 +215,31 @@ class CompanionService:
 
     def owned_forms(self) -> set[tuple[int, str]]:
         """(species, form) pairs reached by any recorded or active Pokémon, shiny or not."""
-        owned: set[tuple[int, str]] = set()
-        chains = [(e.chain_order, e.form) for e in self.state.dex]
+        return dex_progress.owned_forms(self.state)
+
+    def growth(self) -> Growth:
+        """Progress toward hatching or the next evolution (graduation on the final form).
+
+        Integer arithmetic, so it always matches Home's floor: 29% must never read 28%.
+        """
         a = self.state.active
-        if a is not None:
-            chains.append((a.path_ids[: a.stage_index + 1], a.form))
-        for chain, form in chains:
-            for sid in chain:
-                resolved = forms.resolve(sid, form)
-                if resolved is not None:
-                    owned.add((sid, resolved))
-        return owned
+        if a is None:
+            kind, total, credits = "hatch", self.egg_hatch_threshold, self.state.egg_usage
+        else:
+            kind, total, credits = "growth", self.stage_threshold_of(a), a.used_at_stage
+        used = min(max(0, credits), total)
+        return Growth(kind, used * 100 // total if total > 0 else 0)
+
+    def pray(self) -> int:
+        """Pray over the egg. Counted and shown, never read by any roll."""
+        state = self.state
+        if state.active is not None:
+            raise ValueError("only an egg can be prayed over")
+        record = state.egg_prayers or PrayerRecord()
+        record.count = min(MAX_TOKEN_VALUE, record.count + 1)
+        state.egg_prayers = record
+        self.save()
+        return record.count
 
     def form_label(self, species_id: int, form: str | None) -> str | None:
         return forms.label(species_id, form, self.state.language, self.poke.cached_form_names)
@@ -218,13 +278,19 @@ class CompanionService:
         burn_tier: str,
         limit_warning: bool,
         has_usage_data: bool,
+        time_since_last_usage: float | None = None,
+        now: datetime | None = None,
     ) -> None:
         state = self.state
+        now = now or datetime.now(UTC)
         today_tokens = sum(today_by_provider.values())
         # `has_usage_data` only says a snapshot exists; this map holds providers that
         # actually reported a total for today. A stale or empty refresh must not be
         # allowed to move the ledger's reference point.
         has_current = has_usage_data and bool(today_by_provider)
+        idle = self._effective_idle(
+            time_since_last_usage, has_current, today_date, today_tokens, now
+        )
 
         if not state.install_baseline_set:
             if not has_current:
@@ -276,8 +342,34 @@ class CompanionService:
             limit_warning=limit_warning,
             has_usage_data=has_usage_data,
             today_tokens=today_tokens,
+            idle_seconds=idle,
         )
+        self.sulk_idle = idle if self.display_state == "sulk" and idle is not None else 0.0
         self.save()
+
+    def _effective_idle(
+        self,
+        reported: float | None,
+        has_current: bool,
+        today_date: str,
+        today_tokens: int,
+        now: datetime,
+    ) -> float | None:
+        """Seconds since the last usage, or None while unknown (which never sulks).
+
+        A first sighting and a new day are baselines, not usage: only a rise of today's
+        total within the same day counts as fresh activity.
+        """
+        if has_current:
+            seen = self._last_seen_today
+            if seen is not None and seen[0] == today_date and today_tokens > seen[1]:
+                self._last_observed_usage = now
+            self._last_seen_today = (today_date, today_tokens)
+        if reported is None:
+            return None
+        if self._last_observed_usage is None:
+            return reported
+        return min(reported, max(0.0, (now - self._last_observed_usage).total_seconds()))
 
     async def _advance_ledger(self, today_by_provider: dict[str, int], today_date: str) -> None:
         """Credit only the growth since the last observation of the same day."""
@@ -388,6 +480,9 @@ class CompanionService:
                 a.total_forms = len(repaired)
                 log.info("evolve: repaired invalid planned path for base %d", a.base_id)
 
+            old_name = self.form_display_name(
+                line.display_name(a.current_id, state.language), a.current_id, a.form
+            )
             a.path_ids = a.path_ids[: a.stage_index + 1] + [nxt.species_id]
             a.current_id = nxt.species_id
             a.stage_index += 1
@@ -398,7 +493,12 @@ class CompanionService:
             )
             self.just_evolved_to = name
             self._fire_event(
-                "evolve", name=name, shiny=a.is_shiny, species_id=nxt.species_id, form=a.form
+                "evolve",
+                f"{old_name} evolved into {name}!",
+                name=name,
+                shiny=a.is_shiny,
+                species_id=nxt.species_id,
+                form=a.form,
             )
 
         self._reconcile_profile_growth()
@@ -576,7 +676,9 @@ class CompanionService:
                 has_growth_boost=self.has_collected_final(line.base_id),
                 profile=profile,
                 form=form,
+                prayers=state.egg_prayers,
             )
+            state.egg_prayers = None
             self._enrich_active()
             # A disguise hides its shininess until the reveal.
             show_shiny = is_shiny and ditto_disguise is None
@@ -591,11 +693,14 @@ class CompanionService:
                 state.active.has_growth_boost,
             )
             await self._warm_form_names(line.base_id, form)
+            hatched_name = self.form_display_name(
+                line.display_name(line.base_id, state.language), line.base_id, form
+            )
+            prayers = state.active.prayers.count if state.active.prayers else 0
             self._fire_event(
                 "hatch",
-                name=self.form_display_name(
-                    line.display_name(line.base_id, state.language), line.base_id, form
-                ),
+                hatch_text(hatched_name, show_shiny, odds, line.rarity, prayers),
+                name=hatched_name,
                 shiny=show_shiny,
                 species_id=line.base_id,
                 form=form,
@@ -734,8 +839,10 @@ class CompanionService:
             self._enrich_active()
 
             log.info("ditto reveal: rarity=%s shiny=%s", ditto_line.rarity.value, m.is_shiny)
+            reveal = "a shiny Ditto" if m.is_shiny else "Ditto all along"
             self._fire_event(
                 "ditto_reveal",
+                f"You thought it was {disguise_name} — it was {reveal}!",
                 name=ditto_line.display_name(ditto_line.base_id, state.language),
                 shiny=m.is_shiny,
                 species_id=ditto_line.base_id,
@@ -787,6 +894,7 @@ class CompanionService:
                 names=self._names_for(a.path_ids),
                 profile=a.profile,
                 form=a.form,
+                prayers=a.prayers,
             )
         )
         name = (
@@ -796,13 +904,21 @@ class CompanionService:
         )
         name = self.form_display_name(name, final_id, a.form)
         self.just_graduated = name
-        self._fire_event("graduate", name=name, shiny=a.is_shiny, species_id=final_id, form=a.form)
+        self._fire_event(
+            "graduate",
+            f"{name} — saved to your Pokédex! A new egg has arrived.",
+            name=name,
+            shiny=a.is_shiny,
+            species_id=final_id,
+            form=a.form,
+        )
 
         state.active = None
         self._generation += 1
         self.current_line = None
         self.hatch_retry_delayed = False
         state.egg_usage = 0  # the next egg incubates from scratch
+        state.egg_prayers = None
         # egg_tier is untouched: reaching here means a Pokémon was active, so any
         # guarantee was already consumed at hatch time.
 
@@ -824,6 +940,7 @@ class CompanionService:
             names=self._names_for(chain),
             profile=a.profile,
             form=a.form,
+            prayers=a.prayers,
         )
 
     # ------------------------------------------------------------------
@@ -1037,6 +1154,7 @@ class CompanionService:
         self.current_line = None
         self.hatch_retry_delayed = False
         state.egg_usage = 0
+        state.egg_prayers = None
         state.egg_tier = tier
         state.egg_prefetch_base_id = None
         self.save()
@@ -1128,13 +1246,24 @@ class CompanionService:
         self.current_line = None
         self.hatch_retry_delayed = False
         self._generation += 1
+        # An older save arrives unseeded: without this, its completions would never be
+        # announced again, and the next restart would silently swallow new ones.
+        if not self.state.dex_completions_seeded:
+            dex_progress.seed_completions(self.state)
+            self.store.save()
 
     # ------------------------------------------------------------------
     # presentation helpers
     # ------------------------------------------------------------------
 
     def _compute_display_state(
-        self, *, burn_tier: str, limit_warning: bool, has_usage_data: bool, today_tokens: int
+        self,
+        *,
+        burn_tier: str,
+        limit_warning: bool,
+        has_usage_data: bool,
+        today_tokens: int,
+        idle_seconds: float | None = None,
     ) -> str:
         if self.state.active is None:
             return "egg"
@@ -1142,6 +1271,8 @@ class CompanionService:
             return "levelUp"
         if limit_warning:
             return "tired"
+        if has_usage_data and idle_seconds is not None and idle_seconds >= B.SULK_AFTER_IDLE:
+            return "sulk"
         if not has_usage_data or today_tokens == 0:
             return "sleep"
         if burn_tier == "idle":
@@ -1150,18 +1281,39 @@ class CompanionService:
             return "working"
         return "focus"
 
-    def _fire_event(self, kind: str, **payload: object) -> None:
-        self.event = {"kind": kind, **payload}
+    def _fire_event(self, kind: str, text: str, **fields: object) -> None:
+        self.event = self._announce(kind, text, **fields)
         self.event_until = datetime.now(timezone.utc) + EVENT_WINDOW
 
-    def take_event(self) -> dict | None:
-        """Hand the pending flourish to the client exactly once."""
-        event = self.event
-        if event is None:
-            return None
-        self.event = None
-        self.event_until = None
+    def _announce(self, kind: str, text: str, **fields: object) -> CompanionEvent:
+        self._event_seq += 1
+        event = CompanionEvent(
+            seq=self._event_seq, kind=kind, at=datetime.now(UTC), text=text, **fields
+        )
+        self._events.append(event)
         return event
+
+    def recent_events(self, now: datetime | None = None) -> list[CompanionEvent]:
+        """Events from the last couple of minutes, oldest first. Reading never consumes."""
+        cutoff = (now or datetime.now(UTC)) - EVENT_FEED_TTL
+        return [e for e in self._events if e.at >= cutoff]
+
+
+def hatch_text(name: str, shiny: bool, odds: int, rarity: Rarity, prayers: int) -> str:
+    """The hatch line. `shiny` is what is shown: a disguised Ditto hides it."""
+    if prayers <= 0:
+        if shiny:
+            return f"A shiny {name} hatched! (1 in {odds})"
+        return f"{name} hatched from the egg!"
+    if shiny and rarity is Rarity.LEGENDARY:
+        return f"{prayers} prayers… heaven went all in. Shiny {name}!"
+    if rarity is Rarity.LEGENDARY:
+        return f"{prayers} prayers… it worked?! {name} hatched!"
+    if shiny:
+        return f"{prayers} prayers AND it's shiny?! {name} hatched!"
+    if rarity is Rarity.COMMON:
+        return f"{prayers} prayers later: {name}. Heaven must be swamped today."
+    return f"{prayers} prayers later: {name}. Let's call it half a miracle."
 
 
 # A reset has to advance by this much to count as a new window. Smaller moves are the

@@ -137,6 +137,56 @@
   cursor: default;
 }
 
+/* Region chips: green once the region is complete, grey otherwise. */
+.collChips .chip--region {
+  --region-accent: var(--text-dim);
+  text-transform: none;
+  background: color-mix(in srgb, var(--region-accent) 8%, transparent);
+  border-color: color-mix(in srgb, var(--region-accent) 35%, transparent);
+}
+
+.collChips .chip--region.is-complete {
+  --region-accent: var(--ok);
+  background: color-mix(in srgb, var(--region-accent) 14%, transparent);
+}
+
+.collChips .chip--region.is-active {
+  background: color-mix(in srgb, var(--region-accent) 22%, transparent);
+  border-color: var(--region-accent);
+}
+
+.collChips .chip--region strong {
+  color: var(--text-dim);
+}
+
+.collChips .chip--region.is-complete strong {
+  color: var(--ok);
+}
+
+.collChips .chip--region:disabled {
+  opacity: 0.5;
+}
+
+.chip__glyph {
+  font-size: 10px;
+}
+
+.collMedals {
+  display: inline-flex;
+  gap: 4px;
+  margin-right: 8px;
+  vertical-align: middle;
+}
+
+.collMedal {
+  padding: 1px 5px;
+  border: 1px solid color-mix(in srgb, var(--gold) 50%, transparent);
+  border-radius: 999px;
+  background: color-mix(in srgb, var(--gold) 14%, transparent);
+  font-size: 12px;
+  line-height: 1.3;
+}
+
 .collChips__dot {
   width: 7px;
   height: 7px;
@@ -554,6 +604,14 @@
 .pd__reference,
 .pd__dim {
   color: var(--text-dim);
+}
+
+.pd__prayers {
+  margin: 10px 0 4px;
+}
+
+.pd__prayers .pd__dim {
+  font-size: 13px;
 }
 
 .pd__status {

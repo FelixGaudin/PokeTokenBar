@@ -6,6 +6,7 @@ export type DisplayState =
   | "working"
   | "focus"
   | "tired"
+  | "sulk"
   | "sleep"
   | "levelUp";
 
@@ -54,26 +55,48 @@ export interface EggView {
   guaranteed_tier: Rarity | null;
   /** Ready, but the last hatch attempt failed for an external reason. */
   hatch_delayed: boolean;
+  /** Prayers said over this egg from the floating pet. Cosmetic. */
+  prayers: number;
 }
 
+/** A recent event. Each `seq` is shown once; reading the state never consumes it. */
 export interface CompanionEvent {
-  kind: "hatch" | "evolve" | "graduate" | "ditto_reveal";
-  name?: string;
-  shiny?: boolean;
-  species_id?: number;
-  disguise_name?: string;
+  seq: number;
+  kind: "hatch" | "evolve" | "graduate" | "ditto_reveal" | "dex_completion";
+  at: string;
+  /** One line, as the floating pet pops it. */
+  text: string;
+  title: string | null;
+  name: string | null;
+  shiny: boolean;
+  species_id: number | null;
+  form: string | null;
   /** Shiny odds denominator the hatch actually rolled with. */
-  odds?: number;
-  form?: string | null;
+  odds: number | null;
+  disguise_name: string | null;
+  /** The completion badge's key, for dex_completion. */
+  badge: string | null;
+}
+
+export interface GrowthView {
+  kind: "hatch" | "growth";
+  /** Integer-floored, so it always matches the Home card's percentage. */
+  percent: number;
 }
 
 export interface CompanionView {
   display_state: DisplayState;
   egg: EggView;
   active: ActiveView | null;
-  event: CompanionEvent | null;
+  /** The last couple of minutes, oldest first. */
+  events: CompanionEvent[];
   just_evolved_to: string | null;
   just_graduated: string | null;
+  growth: GrowthView;
+  /** Shown from behind: sulking, or the "Show back view" preference. */
+  faces_back: boolean;
+  /** Seconds without usage while sulking, else 0. */
+  sulk_idle_seconds: number;
 }
 
 /** Where a cost came from. Only "unknown without anything known" reads Unavailable. */
@@ -110,6 +133,29 @@ export interface DayPoint {
   cost_coverage: CostCoverage;
 }
 
+export interface StreakView {
+  /** Consecutive days with usage; shown from 2. */
+  days: number;
+  /** False while today has no usage yet: the run holds, today's first use extends it. */
+  includes_today: boolean;
+}
+
+export interface ActivityCell {
+  date: string;
+  tokens: number;
+  /** False before recording began or after today: drawn as nothing. */
+  in_range: boolean;
+  /** 0 for an unused day, then quartiles of the peak (1-4). */
+  level: number;
+}
+
+/** 16 Monday-first week columns, oldest first; the last one holds today. */
+export interface ActivityView {
+  weeks: ActivityCell[][];
+  peak: number;
+  used_days: number;
+}
+
 export interface UsageView {
   today_date: string;
   today: PeriodView;
@@ -120,6 +166,10 @@ export interface UsageView {
   burn_tier: "idle" | "normal" | "fast" | "blazing";
   /** This month from the 1st through today, empty days included. */
   month_daily: DayPoint[];
+  /** The last 21 days through today, empty days included. */
+  rolling_daily: DayPoint[];
+  activity: ActivityView;
+  streak: StreakView;
   scanned_files: number;
 }
 
@@ -272,11 +322,43 @@ export interface SpeciesFormView {
   is_raising: boolean;
 }
 
+export interface RegionProgressView {
+  key: string;
+  name: string;
+  first: number;
+  last: number;
+  owned: number;
+  shiny_owned: number;
+  total: number;
+  is_complete: boolean;
+  is_shiny_complete: boolean;
+}
+
+export interface DexBadgeView {
+  key: string;
+  kind: "region" | "regionShiny" | "unown" | "national" | "nationalShiny";
+  region: string | null;
+  emoji: string;
+  label: string;
+}
+
+export interface DexProgressView {
+  regions: RegionProgressView[];
+  national_owned: number;
+  national_shiny_owned: number;
+  national_total: number;
+  unown_forms: number;
+  unown_total: number;
+  /** Every badge earned, in announcement order. */
+  badges: DexBadgeView[];
+}
+
 export interface CollectionView {
   total: number;
   counts_by_rarity: Record<string, number>;
   catch_log: DexEntryView[];
   pokedex: DexSpeciesView[];
+  dex_progress: DexProgressView;
 }
 
 export interface StatView {
@@ -306,6 +388,8 @@ export interface IndividualView {
   stats: StatView[];
   stat_scale: number;
   moves: { name: string; learned_at_level: number }[];
+  /** Prayers its egg received. */
+  prayers: number;
 }
 
 export interface PokemonDetailView {
@@ -373,7 +457,15 @@ export interface MetaView {
   difficulty_max: number;
   limit_display: "used" | "remaining";
   crit_threshold: number;
+  daily_trend_window: TrendWindow;
+  activity_view: ActivityViewKind;
+  /** Growth % in the top bar and the tab title. */
+  growth_in_title: boolean;
+  always_faces_back: boolean;
 }
+
+export type TrendWindow = "7d" | "14d" | "21d" | "month";
+export type ActivityViewKind = "monthlyBars" | "recentHeatmap";
 
 export interface StateView {
   companion: CompanionView;

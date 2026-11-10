@@ -7,9 +7,11 @@ import logging
 import signal
 import sys
 
+# isort: off
 from . import gtk3  # noqa: F401  (pins GI versions; must precede gi.repository)
 from gi.repository import Gdk, GLib, GLibUnix, Gtk
 
+# isort: on
 from .config import SIZES, Config
 from .window import DEFAULT_FPS, PetWindow
 
@@ -19,10 +21,14 @@ APP_NAME = "poketokenbar-pet"
 
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(prog="pet", description="PokeTokenBar floating desktop pet")
-    parser.add_argument("--url", default=DEFAULT_URL, help=f"backend base URL (default {DEFAULT_URL})")
+    parser.add_argument(
+        "--url", default=DEFAULT_URL, help=f"backend base URL (default {DEFAULT_URL})"
+    )
     parser.add_argument("--interval", type=float, default=5.0, help="seconds between state polls")
     parser.add_argument("--size", type=int, choices=SIZES, help="override the saved size")
-    parser.add_argument("--no-shape", action="store_true", help="disable click-through of transparent areas")
+    parser.add_argument(
+        "--no-shape", action="store_true", help="disable click-through of transparent areas"
+    )
     parser.add_argument(
         "--fps", type=int, default=DEFAULT_FPS, help=f"animation frame rate (default {DEFAULT_FPS})"
     )

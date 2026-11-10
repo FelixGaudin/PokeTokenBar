@@ -38,6 +38,22 @@ def _lenient_profile(value: Any) -> PokemonProfile | None:
         return None
 
 
+class PrayerRecord(BaseModel):
+    """Prayers said over an egg. Cosmetic: no roll ever reads them."""
+
+    count: int = 0
+
+
+def _lenient_prayers(value: Any) -> PrayerRecord | None:
+    """A damaged record reads as no prayers rather than dropping the save."""
+    if value is None or isinstance(value, PrayerRecord):
+        return value
+    try:
+        return PrayerRecord.model_validate(value)
+    except ValidationError:
+        return None
+
+
 class MonState(BaseModel):
     """The Pokémon currently being raised."""
 
@@ -63,11 +79,18 @@ class MonState(BaseModel):
     # The individual's form for its whole line (see forms.py); saves before other
     # species had forms called it unown_form.
     form: str | None = Field(default=None, validation_alias=AliasChoices("form", "unown_form"))
+    # Prayers its egg received.
+    prayers: PrayerRecord | None = None
 
     @field_validator("profile", mode="before")
     @classmethod
     def _lenient(cls, v: Any) -> PokemonProfile | None:
         return _lenient_profile(v)
+
+    @field_validator("prayers", mode="before")
+    @classmethod
+    def _lenient_prayer_record(cls, v: Any) -> PrayerRecord | None:
+        return _lenient_prayers(v)
 
     @field_validator("form", mode="before")
     @classmethod
@@ -106,11 +129,17 @@ class DexEntry(BaseModel):
     names: dict[str, dict[str, str]] = Field(default_factory=dict)
     profile: PokemonProfile | None = None
     form: str | None = Field(default=None, validation_alias=AliasChoices("form", "unown_form"))
+    prayers: PrayerRecord | None = None
 
     @field_validator("profile", mode="before")
     @classmethod
     def _lenient(cls, v: Any) -> PokemonProfile | None:
         return _lenient_profile(v)
+
+    @field_validator("prayers", mode="before")
+    @classmethod
+    def _lenient_prayer_record(cls, v: Any) -> PrayerRecord | None:
+        return _lenient_prayers(v)
 
     @field_validator("form", mode="before")
     @classmethod
@@ -139,6 +168,8 @@ class SaveState(BaseModel):
     egg_usage: int = 0
     egg_tier: Rarity | None = None
     egg_prefetch_base_id: int | None = None
+    # Prayers over the current egg; they move onto the Pokémon when it hatches.
+    egg_prayers: PrayerRecord | None = None
 
     active: MonState | None = None
     dex: list[DexEntry] = Field(default_factory=list)
@@ -157,8 +188,28 @@ class SaveState(BaseModel):
     token_ledger: dict[str, int] = Field(default_factory=dict)
     token_ledger_since: str | None = None
 
+    # Dex completion badges already announced. Badges themselves are computed from the
+    # collection; this only keeps one from being announced twice.
+    notified_dex_completions: list[str] = Field(default_factory=list)
+    dex_completions_seeded: bool = False
+
     language: str = "en"
     created_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
+
+    @field_validator("egg_prayers", mode="before")
+    @classmethod
+    def _lenient_egg_prayers(cls, v: Any) -> PrayerRecord | None:
+        return _lenient_prayers(v)
+
+    @field_validator("notified_dex_completions", mode="before")
+    @classmethod
+    def _lenient_notified(cls, v: Any) -> list[str]:
+        return sorted({k for k in v if isinstance(k, str)}) if isinstance(v, list) else []
+
+    @field_validator("dex_completions_seeded", mode="before")
+    @classmethod
+    def _lenient_seeded(cls, v: Any) -> bool:
+        return v if isinstance(v, bool) else False
 
 
 def migrate_profiles(state: SaveState) -> bool:
@@ -196,6 +247,11 @@ def sanitize(state: SaveState) -> None:
     state.used_since_install = min(MAX_TOKEN_VALUE, max(0, state.used_since_install))
     state.spent_tokens = min(MAX_TOKEN_VALUE, max(0, state.spent_tokens))
     state.egg_usage = min(MAX_TOKEN_VALUE, max(0, state.egg_usage))
+    # Prayers belong to an egg: a hatched save has none left over.
+    if state.active is not None:
+        state.egg_prayers = None
+    elif state.egg_prayers is not None:
+        state.egg_prayers.count = min(MAX_TOKEN_VALUE, max(0, state.egg_prayers.count))
     if state.active is not None:
         a = state.active
         a.form = forms.resolve_line(a.base_id, a.form)
@@ -406,12 +462,23 @@ def _snapshot_date(path: Path) -> datetime:
         return datetime.now().astimezone()
 
 
+TREND_WINDOWS = ("7d", "14d", "21d", "month")
+ACTIVITY_VIEWS = ("monthlyBars", "recentHeatmap")
+
+
 class Preferences(BaseModel):
     """Per-install settings. Kept out of the save so an import never changes them."""
 
     growth_difficulty: float = B.DEFAULT_DIFFICULTY
     shop_difficulty: float = B.DEFAULT_DIFFICULTY
     limit_display: str = "used"  # "used" | "remaining"
+    # The daily bar chart's window, and whether the activity row shows bars or the grid.
+    daily_trend_window: str = "14d"
+    activity_view: str = "monthlyBars"
+    # Growth % in the top bar and the browser tab title (upstream's menu bar item).
+    growth_in_title: bool = False
+    # Always show the companion from behind, not only while it sulks.
+    always_faces_back: bool = False
 
 
 class PreferenceStore:
@@ -430,6 +497,10 @@ class PreferenceStore:
         self.prefs.shop_difficulty = B.clamp_difficulty(self.prefs.shop_difficulty)
         if self.prefs.limit_display not in ("used", "remaining"):
             self.prefs.limit_display = "used"
+        if self.prefs.daily_trend_window not in TREND_WINDOWS:
+            self.prefs.daily_trend_window = "14d"
+        if self.prefs.activity_view not in ACTIVITY_VIEWS:
+            self.prefs.activity_view = "monthlyBars"
 
     def save(self) -> None:
         try:

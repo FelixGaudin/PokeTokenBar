@@ -623,7 +623,7 @@ async def test_a_disguised_ditto_hides_its_shininess_until_the_reveal(tmp_path):
     assert a.is_shiny, "the roll was forced, so it really is shiny underneath"
     assert not a.ditto_revealed
     # The hatch flourish must not leak the shininess while disguised.
-    assert svc.event is not None and svc.event["shiny"] is False
+    assert svc.event is not None and svc.event.shiny is False
 
 
 async def test_a_disguise_reveals_as_ditto_instead_of_evolving(tmp_path):

@@ -12,6 +12,8 @@ from .readers.claude_code import Bucket, CostCoverage, Entry
 
 # The rolling window shared by the burn-rate block and the enrichment scan floor.
 BLOCK_WINDOW = timedelta(hours=5)
+# Days in the rolling daily series behind the 7/14/21-day trend windows, today included.
+ROLLING_DAYS = 21
 
 
 @dataclass
@@ -79,6 +81,10 @@ class UsageSnapshot:
     # (day, tokens) for every day the scan fully covers, which reaches back past
     # the 1st early in a month — so the end of last month still reaches the ledger.
     recent_daily: list[tuple[str, int]] = field(default_factory=list)
+    # The last ROLLING_DAYS days through today, empty days included, with cost.
+    rolling_daily: list[DayUsage] = field(default_factory=list)
+    # The newest turn that used tokens, within the scan (at least ROLLING_DAYS back).
+    last_usage: datetime | None = None
 
     @property
     def has_source(self) -> bool:
@@ -135,9 +141,15 @@ def enrichment_scan_start(now: datetime, tz: ZoneInfo) -> datetime:
     candidates = [
         datetime.combine(start_of_month(today), datetime.min.time(), tzinfo=tz),
         datetime.combine(start_of_week(today), datetime.min.time(), tzinfo=tz),
+        # Calendar days, so a 25-hour day inside the window cannot cut its first morning.
+        datetime.combine(rolling_start(today), datetime.min.time(), tzinfo=tz),
         now - BLOCK_WINDOW,
     ]
     return min(candidates)
+
+
+def rolling_start(today: date) -> date:
+    return today - timedelta(days=ROLLING_DAYS - 1)
 
 
 class UsageService:
@@ -184,9 +196,10 @@ class UsageService:
             if st.st_mtime < modified_since and cached is None:
                 continue
             # Logs are append-only: a file that only grew is read on from the last offset.
-            # A same-size rewrite or a truncation is read again from the start.
+            # A same-size rewrite or a truncation is read again from the start, and so is
+            # a file whose earlier read consumed no complete line.
             prior: _CachedFile | None = None
-            if cached is not None and cached.size < st.st_size and cached.offset <= st.st_size:
+            if cached is not None and 0 < cached.offset <= st.st_size and cached.size < st.st_size:
                 prior = cached
             tail = cc.parse_file_from(path, self.tz, prior.offset if prior else 0)
             if tail is None:
@@ -230,6 +243,11 @@ class UsageService:
             for n in range(local_today.day)
         ]
         per_day: dict[str, Bucket] = {d: Bucket() for d in month_days}
+        rolling_days = [
+            (rolling_start(local_today) + timedelta(days=n)).strftime("%Y-%m-%d")
+            for n in range(ROLLING_DAYS)
+        ]
+        per_rolling_day: dict[str, Bucket] = {d: Bucket() for d in rolling_days}
         today_by_root: dict[str, int] = {r: 0 for r in present}
         first_full_day = (floor.astimezone(self.tz) + timedelta(days=1)).date()
         if floor.astimezone(self.tz).time() == datetime.min.time():
@@ -241,6 +259,7 @@ class UsageService:
         recent_totals: dict[str, int] = dict.fromkeys(recent_days, 0)
         window_start = now - BLOCK_WINDOW
         recent: list[Entry] = []
+        last_usage: datetime | None = None
 
         for e in entries:
             day = e.local_day
@@ -251,12 +270,16 @@ class UsageService:
                 week_b.add(e)
             if day in recent_totals:
                 recent_totals[day] += e.total
+            if day in per_rolling_day:
+                per_rolling_day[day].add(e)
             if month_key <= day <= today_key:
                 month_b.add(e)
                 # Last month's turns in a file that crossed the boundary stay out.
                 per_day[day].add(e)
             if e.date >= window_start:
                 recent.append(e)
+            if e.total > 0 and (last_usage is None or e.date > last_usage):
+                last_usage = e.date
 
         block: BlockUsage | None = None
         if recent:
@@ -275,11 +298,14 @@ class UsageService:
                 coverage=block_b.coverage,
             )
 
-        month_daily = [
-            DayUsage(date=d, total_tokens=per_day[d].total, cost=per_day[d].cost,
-                     coverage=per_day[d].coverage)
-            for d in month_days
-        ]
+        def daily(days: list[str], buckets: dict[str, Bucket]) -> list[DayUsage]:
+            return [
+                DayUsage(date=d, total_tokens=buckets[d].total, cost=buckets[d].cost,
+                         coverage=buckets[d].coverage)
+                for d in days
+            ]
+
+        month_daily = daily(month_days, per_day)
 
         return UsageSnapshot(
             today_date=today_key,
@@ -290,6 +316,8 @@ class UsageService:
             month_daily=month_daily,
             today_by_root=today_by_root,
             recent_daily=list(recent_totals.items()),
+            rolling_daily=daily(rolling_days, per_rolling_day),
+            last_usage=last_usage,
             scanned_files=scanned,
             generated_at=now,
             present_roots=present,

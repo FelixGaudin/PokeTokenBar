@@ -15,18 +15,32 @@ from .config import SETTINGS
 from .runtime import AppRuntime
 from .schemas import (
     ActionResult,
+    ActivityViewRequest,
+    AgentAccepted,
+    AgentEventRequest,
     BuyEggRequest,
     BuyItemRequest,
     DifficultyRequest,
     LanguageRequest,
     LimitDisplayRequest,
     PokemonDetailView,
+    PrayerResult,
     RecapView,
     SnapshotView,
     StateView,
+    ToggleRequest,
+    TrendWindowRequest,
     UseCandyRequest,
 )
-from .state import SaveState, migrate_profiles, parse_save, sanitize
+from .sprites import SpriteUnavailable
+from .state import (
+    ACTIVITY_VIEWS,
+    TREND_WINDOWS,
+    SaveState,
+    migrate_profiles,
+    parse_save,
+    sanitize,
+)
 
 logging.basicConfig(
     level=logging.INFO,
@@ -85,8 +99,42 @@ async def health() -> dict:
 
 
 @app.get("/api/state", response_model=StateView)
-async def get_state() -> StateView:
-    return runtime.build_state()
+async def get_state(agent_after: int | None = None) -> StateView:
+    return runtime.build_state(agent_after)
+
+
+@app.post("/api/agent", status_code=202, response_model=AgentAccepted)
+async def agent_event(request: Request) -> AgentAccepted:
+    """A coding agent reports its state; the floating pet reacts on its next poll.
+
+    Takes query parameters (curl -G --data-urlencode; the first occurrence of a key
+    wins) or a JSON body with the same keys.
+    """
+    query = request.query_params
+    if "state" in query:
+        body = AgentEventRequest(
+            state=query.getlist("state")[0],
+            label=query.getlist("label")[0] if "label" in query else None,
+            message=query.getlist("message")[0] if "message" in query else None,
+        )
+    else:
+        try:
+            body = AgentEventRequest.model_validate(json.loads(await request.body()))
+        except (json.JSONDecodeError, ValueError):
+            raise HTTPException(status_code=400, detail="missing state") from None
+    try:
+        event = runtime.agent.post(body.state, body.label, body.message)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from None
+    return AgentAccepted(accepted=True, seq=event.seq)
+
+
+@app.post("/api/companion/pray", response_model=PrayerResult)
+async def pray() -> PrayerResult:
+    try:
+        return PrayerResult(count=runtime.companion.pray())
+    except ValueError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from None
 
 
 @app.post("/api/refresh", response_model=StateView)
@@ -168,6 +216,38 @@ async def set_limit_display(body: LimitDisplayRequest) -> ActionResult:
     if body.mode not in ("used", "remaining"):
         raise HTTPException(status_code=400, detail=f"unknown mode: {body.mode}")
     runtime.prefs.prefs.limit_display = body.mode
+    runtime.prefs.save()
+    return ActionResult(ok=True, message=None)
+
+
+@app.post("/api/settings/trend-window", response_model=ActionResult)
+async def set_trend_window(body: TrendWindowRequest) -> ActionResult:
+    if body.window not in TREND_WINDOWS:
+        raise HTTPException(status_code=400, detail=f"unknown window: {body.window}")
+    runtime.prefs.prefs.daily_trend_window = body.window
+    runtime.prefs.save()
+    return ActionResult(ok=True, message=None)
+
+
+@app.post("/api/settings/activity-view", response_model=ActionResult)
+async def set_activity_view(body: ActivityViewRequest) -> ActionResult:
+    if body.view not in ACTIVITY_VIEWS:
+        raise HTTPException(status_code=400, detail=f"unknown view: {body.view}")
+    runtime.prefs.prefs.activity_view = body.view
+    runtime.prefs.save()
+    return ActionResult(ok=True, message=None)
+
+
+@app.post("/api/settings/growth-in-title", response_model=ActionResult)
+async def set_growth_in_title(body: ToggleRequest) -> ActionResult:
+    runtime.prefs.prefs.growth_in_title = body.enabled
+    runtime.prefs.save()
+    return ActionResult(ok=True, message=None)
+
+
+@app.post("/api/settings/back-view", response_model=ActionResult)
+async def set_back_view(body: ToggleRequest) -> ActionResult:
+    runtime.prefs.prefs.always_faces_back = body.enabled
     runtime.prefs.save()
     return ActionResult(ok=True, message=None)
 
@@ -275,19 +355,30 @@ async def import_save(request: Request) -> ActionResult:
     return ActionResult(ok=True, message="Save imported")
 
 
+def _sprite_error(exc: SpriteUnavailable) -> HTTPException:
+    # 503 tells clients to retry later; 404 means there is nothing to wait for.
+    if exc.transient:
+        return HTTPException(status_code=503, detail="sprite temporarily unavailable")
+    return HTTPException(status_code=404, detail="sprite unavailable")
+
+
 @app.get("/api/sprite/{species_id}")
 async def sprite(
-    species_id: int, animated: bool = True, shiny: bool = False, form: str | None = None
+    species_id: int,
+    animated: bool = True,
+    shiny: bool = False,
+    form: str | None = None,
+    back: bool = False,
 ) -> Response:
     if not 1 <= species_id <= 1025:
         raise HTTPException(status_code=404, detail="no such species")
     client = await runtime.http()
-    got = await runtime.sprites.pokemon(
-        client, species_id, animated=animated, shiny=shiny, form=form
-    )
-    if got is None:
-        raise HTTPException(status_code=404, detail="sprite unavailable")
-    data, media_type = got
+    try:
+        data, media_type = await runtime.sprites.pokemon(
+            client, species_id, animated=animated, shiny=shiny, form=form, back=back
+        )
+    except SpriteUnavailable as exc:
+        raise _sprite_error(exc) from None
     return Response(
         content=data,
         media_type=media_type,
@@ -298,10 +389,10 @@ async def sprite(
 @app.get("/api/sprite/item/{name}")
 async def item_sprite(name: str) -> Response:
     client = await runtime.http()
-    got = await runtime.sprites.item(client, name)
-    if got is None:
-        raise HTTPException(status_code=404, detail="sprite unavailable")
-    data, media_type = got
+    try:
+        data, media_type = await runtime.sprites.item(client, name)
+    except SpriteUnavailable as exc:
+        raise _sprite_error(exc) from None
     return Response(
         content=data,
         media_type=media_type,

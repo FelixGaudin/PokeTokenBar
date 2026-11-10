@@ -175,6 +175,9 @@ SHINY_DENOMINATOR_WITH_CHARM = 48
 
 def shiny_denominator(charm_owned: bool) -> int:
     return SHINY_DENOMINATOR_WITH_CHARM if charm_owned else SHINY_DENOMINATOR
+# A hatched companion turns its back after this long without token usage.
+SULK_AFTER_IDLE = 3 * 3600
+
 # A common multi-stage hatch has this chance of secretly being a disguised Ditto.
 DITTO_DISGUISE_DENOMINATOR = 128
 DITTO_SPECIES_ID = 132

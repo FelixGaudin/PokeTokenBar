@@ -123,7 +123,8 @@ def test_reads_credential_and_formats_the_plan(tmp_path):
     cred = L.read_credential(path)
     assert cred.access_token == "sk-ant-oat01-test"
     assert not cred.is_expired
-    assert L.plan_display(cred) == "Max 20x"
+    # Max 20x was renamed Ultra; the credential still says max + 20x.
+    assert L.plan_display(cred) == "Ultra"
 
 
 def test_plan_display_without_a_multiplier():
@@ -179,7 +180,7 @@ def test_parses_legacy_and_scoped_limit_windows():
     assert scoped.name == "Claude Opus 5"
     assert scoped.utilization == 44
     assert status.max_utilization == 62
-    assert status.plan == "Max 20x"
+    assert status.plan == "Ultra"
 
 
 def test_windows_without_a_percentage_are_dropped():
@@ -316,7 +317,7 @@ async def test_a_200_parses_into_windows_and_sends_the_right_headers(tmp_path):
     assert seen["beta"] == L.OAUTH_BETA
     assert status.max_utilization == 62
     assert {w.key for w in status.windows} == {"session", "weekly_all"}
-    assert status.plan == "Max 20x"
+    assert status.plan == "Ultra"
 
 
 async def test_a_network_error_is_reported_without_blaming_the_token(tmp_path):
@@ -371,9 +372,87 @@ def test_account_display():
 
 def test_parse_profile_requires_an_email():
     ok = {"account": {"email": "dev@example.com"}, "organization": {"name": "Acme Corp"}}
-    assert L.parse_profile(ok) == ("dev@example.com", "Acme Corp")
+    assert L.parse_profile(ok) == L.ProfileIdentity("dev@example.com", "Acme Corp")
     assert L.parse_profile({"account": {}, "organization": {"name": "x"}}) is None
-    assert L.parse_profile({"account": {"email": "a@b"}, "organization": None}) == ("a@b", None)
+    assert L.parse_profile({"account": {"email": "a@b"}, "organization": None}) == (
+        L.ProfileIdentity("a@b", None)
+    )
+
+
+def test_parse_profile_reads_the_plan_display_name():
+    def profile(organization):
+        return {"account": {"email": "dev@example.com"}, "organization": organization}
+
+    ultra = profile(
+        {
+            "organization_type": "claude_max",
+            "rate_limit_tier": "default_claude_max_20x",
+            "plan_display_name": "Ultra",
+            "plan_display_label": "Ultra plan",
+        }
+    )
+    assert L.parse_profile(ultra) == L.ProfileIdentity("dev@example.com", None, "Ultra")
+    assert L.parse_profile(profile({"plan_display_name": "  Max \n"})).plan_display_name == "Max"
+    assert L.parse_profile(profile({"plan_display_name": "   "})).plan_display_name is None
+    assert L.parse_profile({"account": {"email": "a@b"}}).plan_display_name is None
+
+
+@pytest.mark.parametrize(
+    ("subscription", "tier", "profile_name", "expected"),
+    [
+        ("max", "default_claude_max_20x", None, "Ultra"),
+        ("max", "default_claude_max_5x", None, "Max"),
+        ("max", "default_claude_max", None, "Max"),
+        ("max", None, None, "Max"),
+        # An unknown multiplier keeps its number rather than borrowing a name.
+        ("max", "default_claude_max_10x", None, "Max 10x"),
+        ("max", "default_claude_max_20x", "Ultra", "Ultra"),
+        ("max", "default_claude_max_20x", "", "Ultra"),
+        ("max", "default_claude_max_20x", "   ", "Ultra"),
+        # The server's name wins, even without plan fields in the credential.
+        (None, None, "Ultra", "Ultra"),
+        (None, None, None, None),
+        ("max", "default_claude_max_5x", "Max", "Max"),
+        ("pro", "default_claude_pro", None, "Pro"),
+        ("pro", "default_claude_pro_2x", None, "Pro 2x"),
+        ("free", None, None, "Free"),
+        ("", "default_claude_max_20x", None, None),
+    ],
+)
+def test_plan_display(subscription, tier, profile_name, expected):
+    cred = L.Credential("t", None, subscription, tier)
+    assert L.plan_display(cred, profile_name) == expected
+
+
+async def test_the_profile_plan_name_replaces_the_tier_label(tmp_path):
+    def handler(request):
+        if request.url.path.endswith("/profile"):
+            return httpx.Response(
+                200,
+                json={
+                    "account": {"email": "dev@example.com"},
+                    "organization": {"name": "Acme", "plan_display_name": "Max"},
+                },
+            )
+        return httpx.Response(200, json={"seven_day": {"utilization": 31}})
+
+    async with _client(handler) as c:
+        status = await _provider(tmp_path).fetch(c)
+    assert status.plan == "Max"
+    assert status.account_email == "dev@example.com"
+
+
+def test_a_weekly_only_plan_reports_just_the_weekly_window():
+    """Ultra has no 5-hour limit: five_hour is null and limits[] only holds weekly_all."""
+    cred = L.Credential("t", None, "max", "default_claude_max_20x")
+    payload = {
+        "five_hour": None,
+        "seven_day": {"utilization": 66, "resets_at": "2026-11-12T00:00:00Z"},
+        "limits": [{"kind": "weekly_all", "percent": 66}],
+    }
+    status = L.parse_status(payload, cred)
+    assert [(w.key, w.span_seconds) for w in status.windows] == [("weekly_all", 7 * 86400)]
+    assert status.max_utilization == 66
 
 
 def test_the_last_good_token_stands_in_when_the_file_vanishes(tmp_path):

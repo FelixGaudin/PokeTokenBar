@@ -34,8 +34,26 @@ import {
   roundedDelta,
 } from "../lib/pace";
 import type { LimitDisplay } from "../lib/pace";
-import { axisLabel, barHeight, localDate, monthColumns } from "../lib/trend";
-import type { AccountLimitsView, DayPoint, LimitWindowView, StateView } from "../types";
+import {
+  ACTIVITY_VIEWS,
+  WINDOW_ORDER,
+  WINDOW_TITLES,
+  axisLabelFor,
+  barHeight,
+  localDate,
+  nextView,
+  trendColumns,
+} from "../lib/trend";
+import type {
+  AccountLimitsView,
+  ActivityView,
+  ActivityViewKind,
+  DayPoint,
+  LimitWindowView,
+  StateView,
+  StreakView,
+  TrendWindow,
+} from "../types";
 
 /** "X / Y · Z%": used clamps to the total (egg usage can overshoot while a hatch retries) and the percent floors, so 100% means done. */
 function progressDetail(used: number, total: number): string {
@@ -164,6 +182,7 @@ function CompanionCard({
               speciesId={active.species_id}
               shiny={active.is_shiny}
               form={active.form}
+              back={companion.faces_back}
               size={120}
               alt={active.name}
             />
@@ -256,15 +275,51 @@ function dayStamp(key: string): string {
   });
 }
 
-function MonthTrend({ days, todayKey }: { days: DayPoint[]; todayKey: string }) {
+/** One dot per view; the current one stands out. The only hint that the row switches. */
+function PageDots({ view, onSwitch }: { view: ActivityViewKind; onSwitch: () => void }) {
+  return (
+    <button
+      type="button"
+      className="activity__dots"
+      aria-label="Switch view"
+      onClick={(e) => {
+        e.stopPropagation();
+        onSwitch();
+      }}
+    >
+      {ACTIVITY_VIEWS.map((v) => (
+        <span key={v} className={`activity__dot ${v === view ? "is-current" : ""}`} />
+      ))}
+    </button>
+  );
+}
+
+function DailyTrend({
+  monthDaily,
+  rollingDaily,
+  todayKey,
+  period,
+  onPeriod,
+  hasHistory,
+  dots,
+}: {
+  monthDaily: DayPoint[];
+  rollingDaily: DayPoint[];
+  todayKey: string;
+  period: TrendWindow;
+  onPeriod: (period: TrendWindow) => void;
+  /** Some day of the month or the last 21 days has usage. */
+  hasHistory: boolean;
+  dots: React.ReactNode;
+}) {
   const [hover, setHover] = useState<string | null>(null);
-  const columns = monthColumns(days, todayKey);
+  const columns = trendColumns(period, monthDaily, rollingDaily, todayKey);
   const peak = Math.max(0, ...columns.map((c) => c.point.total_tokens));
-  if (columns.length === 0 || peak <= 0) return null;
+  // An empty window keeps its caption while other days have usage, so it can be changed.
+  if (columns.length === 0 || (peak <= 0 && !hasHistory)) return null;
 
   const todayColumn = columns.find((c) => c.point.date === todayKey) ?? columns[columns.length - 1];
-  const todayDay = localDate(todayColumn.point.date).getDate();
-  // The month can change under a held hover (at midnight on the last day).
+  // The window can change under a held hover (at midnight).
   const shown = (columns.find((c) => c.point.date === hover) ?? todayColumn).point;
   // With a single day of usage the peak would repeat the readout.
   const showsPeak = columns.filter((c) => c.point.total_tokens > 0).length > 1;
@@ -272,56 +327,229 @@ function MonthTrend({ days, todayKey }: { days: DayPoint[]; todayKey: string }) 
   return (
     <div className="trend" onMouseLeave={() => setHover(null)}>
       <div className="trend__caption">
-        <span className="trend__title">Daily this month</span>
+        <select
+          className="trend__window"
+          aria-label="Daily trend period"
+          value={period}
+          onClick={(e) => e.stopPropagation()}
+          onChange={(e) => onPeriod(e.target.value as TrendWindow)}
+        >
+          {WINDOW_ORDER.map((w) => (
+            <option key={w} value={w}>
+              {WINDOW_TITLES[w]}
+            </option>
+          ))}
+        </select>
         <span className="trend__readout">
           {dayStamp(shown.date)} {tokens(shown.total_tokens)}{" "}
           {costText(shown.cost, shown.cost_coverage)}
         </span>
-        {showsPeak && (
-          <span className="trend__peak">
-            Peak <strong>{tokens(peak)}</strong>
-          </span>
-        )}
+        <span className="trend__end">
+          {showsPeak && (
+            <span className="trend__peak">
+              Peak <strong>{tokens(peak)}</strong>
+            </span>
+          )}
+          {dots}
+        </span>
       </div>
-      <div
-        className="trend__grid"
-        style={{ gridTemplateColumns: `repeat(${columns.length}, 1fr)` }}
-      >
-        {columns.map(({ point: d, isFuture }) => {
-          const date = localDate(d.date);
-          const weekday = date.getDay();
-          const label = axisLabel(date.getDate(), todayDay);
-          const isToday = d.date === todayColumn.point.date;
-          const axisClass = isToday ? "trend__axis--today" : isFuture ? "trend__axis--future" : "";
-          return (
-            <div
-              key={d.date}
-              className="trend__col"
-              onMouseEnter={isFuture ? undefined : () => setHover(d.date)}
-              role={isFuture ? undefined : "img"}
-              aria-label={isFuture ? undefined : `${dayStamp(d.date)}, ${exact(d.total_tokens)} tokens`}
-            >
-              <span className="trend__track">
-                {!isFuture && (
-                  <span
-                    className={`trend__bar ${isToday ? "trend__bar--today" : ""} ${
-                      d.total_tokens <= 0 ? "trend__bar--zero" : ""
-                    }`}
-                    style={{ height: `${barHeight(d.total_tokens, peak)}px` }}
-                  />
-                )}
-              </span>
-              <span
-                className={`trend__weekend ${
-                  !isFuture && (weekday === 0 || weekday === 6) ? "is-weekend" : ""
-                }`}
-              />
-              <span className={`trend__axis ${axisClass}`}>{label ?? ""}</span>
-            </div>
-          );
-        })}
-      </div>
+      {peak > 0 && (
+        <div
+          className="trend__grid"
+          style={{ gridTemplateColumns: `repeat(${columns.length}, 1fr)` }}
+        >
+          {columns.map(({ point: d, isFuture }) => {
+            const weekday = localDate(d.date).getDay();
+            const label = axisLabelFor(period, d.date, todayKey);
+            const isToday = d.date === todayColumn.point.date;
+            const axisClass = isToday
+              ? "trend__axis--today"
+              : isFuture
+                ? "trend__axis--future"
+                : "";
+            return (
+              <div
+                key={d.date}
+                className="trend__col"
+                onMouseEnter={isFuture ? undefined : () => setHover(d.date)}
+                role={isFuture ? undefined : "img"}
+                aria-label={
+                  isFuture ? undefined : `${dayStamp(d.date)}, ${exact(d.total_tokens)} tokens`
+                }
+              >
+                <span className="trend__track">
+                  {!isFuture && (
+                    <span
+                      className={`trend__bar ${isToday ? "trend__bar--today" : ""} ${
+                        d.total_tokens <= 0 ? "trend__bar--zero" : ""
+                      }`}
+                      style={{ height: `${barHeight(d.total_tokens, peak)}px` }}
+                    />
+                  )}
+                </span>
+                <span
+                  className={`trend__weekend ${
+                    !isFuture && (weekday === 0 || weekday === 6) ? "is-weekend" : ""
+                  }`}
+                />
+                <span className={`trend__axis ${axisClass}`}>{label ?? ""}</span>
+              </div>
+            );
+          })}
+        </div>
+      )}
     </div>
+  );
+}
+
+const WEEKDAY_LETTERS = ["M", "T", "W", "T", "F", "S", "S"];
+
+/** 16 Monday-first weeks of daily totals, the ledger's history included. */
+function ActivityGrid({
+  activity,
+  monthDaily,
+  todayKey,
+  hasHistory,
+  dots,
+}: {
+  activity: ActivityView;
+  monthDaily: DayPoint[];
+  todayKey: string;
+  hasHistory: boolean;
+  dots: React.ReactNode;
+}) {
+  const [hover, setHover] = useState<string | null>(null);
+  if (activity.peak <= 0 && !hasHistory) return null;
+
+  // Cells are too small for their own tooltip, so the caption follows the pointer.
+  const shownKey = hover ?? todayKey;
+  const live = monthDaily.find((d) => d.date === shownKey);
+  const cell = activity.weeks.flat().find((c) => c.date === shownKey);
+  const readout = live
+    ? `${dayStamp(live.date)} ${tokens(live.total_tokens)} ${costText(live.cost, live.cost_coverage)}`
+    : cell
+      ? `${dayStamp(cell.date)} ${tokens(cell.tokens)}`
+      : "";
+
+  return (
+    <div className="trend" onMouseLeave={() => setHover(null)}>
+      <div className="trend__caption">
+        <span className="trend__title">16 weeks</span>
+        <span className="trend__readout">{readout}</span>
+        <span className="trend__end">
+          {activity.used_days > 1 && (
+            <span className="trend__peak">
+              Peak <strong>{tokens(activity.peak)}</strong>
+            </span>
+          )}
+          {dots}
+        </span>
+      </div>
+      {activity.peak > 0 && (
+        <div className="heat" role="img" aria-label="Daily usage over the last 16 weeks">
+          {WEEKDAY_LETTERS.map((letter, i) => (
+            <span key={`label-${i}`} className="heat__label" aria-hidden="true">
+              {letter}
+            </span>
+          ))}
+          {activity.weeks.flat().map((c) => (
+            <span
+              key={c.date}
+              className={`heat__cell ${
+                c.in_range ? `heat__cell--l${c.level}` : "heat__cell--out"
+              } ${c.date === todayKey ? "heat__cell--today" : ""}`}
+              onMouseEnter={c.in_range ? () => setHover(c.date) : undefined}
+            />
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
+/** The daily bars or the 16-week grid; a click anywhere on it switches between them. */
+function ActivityPanel({ state }: { state: StateView }) {
+  const { usage, meta } = state;
+  // Optimistic copies of the stored choices, re-synced whenever the server's change.
+  const [view, setView] = useState({ synced: meta.activity_view, value: meta.activity_view });
+  if (view.synced !== meta.activity_view) {
+    setView({ synced: meta.activity_view, value: meta.activity_view });
+  }
+  const [period, setPeriod] = useState({
+    synced: meta.daily_trend_window,
+    value: meta.daily_trend_window,
+  });
+  if (period.synced !== meta.daily_trend_window) {
+    setPeriod({ synced: meta.daily_trend_window, value: meta.daily_trend_window });
+  }
+
+  const cycle = () => {
+    const next = nextView(view.value);
+    setView({ ...view, value: next });
+    api.setActivityView(next).catch(() => setView((v) => ({ ...v, value: v.synced })));
+  };
+  const choosePeriod = (next: TrendWindow) => {
+    setPeriod({ ...period, value: next });
+    api.setTrendWindow(next).catch(() => setPeriod((w) => ({ ...w, value: w.synced })));
+  };
+
+  const hasHistory = [...usage.month_daily, ...usage.rolling_daily].some(
+    (d) => d.total_tokens > 0,
+  );
+  const dots = <PageDots view={view.value} onSwitch={cycle} />;
+
+  return (
+    <div className="activity" title="Click to switch the view" onClick={cycle}>
+      {view.value === "recentHeatmap" ? (
+        <ActivityGrid
+          activity={usage.activity}
+          monthDaily={usage.month_daily}
+          todayKey={usage.today_date}
+          hasHistory={hasHistory}
+          dots={dots}
+        />
+      ) : (
+        <DailyTrend
+          monthDaily={usage.month_daily}
+          rollingDaily={usage.rolling_daily}
+          todayKey={usage.today_date}
+          period={period.value}
+          onPeriod={choosePeriod}
+          hasHistory={hasHistory}
+          dots={dots}
+        />
+      )}
+    </div>
+  );
+}
+
+function FlameIcon() {
+  return (
+    <svg width="12" height="12" viewBox="0 0 16 16" aria-hidden="true">
+      <path
+        fill="currentColor"
+        d="M8.6 1c.3 2.2-.6 3.5-1.6 4.7C6 6.9 5 8 5 9.8a3 3 0 0 0 1.4 2.6c-.2-1.4.5-2.4 1.3-3.2.3 1.3 1.6 1.8 1.8 3.2.1.4 0 .9-.1 1.2A3.6 3.6 0 0 0 12 10c0-1.6-.7-2.8-1.3-3.7.1.9-.2 1.6-.8 2 0-2.9-.8-5.3-1.3-7.3ZM8 15.5c-2.9 0-5-2.1-5-5 0-1.4.5-2.6 1.2-3.6-.1 1.4.2 2.5 1 3.2-.1-2.5 1-4 2-5.3.9-1.2 1.6-2.1 1.4-3.8 2 1.3 4.4 4.3 4.4 8.5 0 3.5-2.1 6-5 6Z"
+      />
+    </svg>
+  );
+}
+
+/** Consecutive days with usage, from two. Gray until today's first use extends it. */
+function StreakBadge({ streak }: { streak: StreakView }) {
+  if (streak.days < 2) return null;
+  const label = streak.includes_today
+    ? `${streak.days}-day streak`
+    : `${streak.days}-day streak — use it today to keep it going`;
+  return (
+    <span
+      className={`home__streak ${streak.includes_today ? "is-lit" : ""}`}
+      title={label}
+      aria-label={label}
+      role="img"
+    >
+      <FlameIcon />
+      <span aria-hidden="true">{streak.days}</span>
+    </span>
   );
 }
 
@@ -365,16 +593,19 @@ function TokenStats({ state, onRecap }: { state: StateView; onRecap: () => void 
           <span className="rangeRow__cost">
             {costText(usage.month.cost, usage.month.cost_coverage)}
           </span>
-          <button
-            type="button"
-            className="home__recapBtn"
-            onClick={onRecap}
-            title="Usage recap"
-            aria-label="Usage recap"
-          >
-            <RecapIcon />
-            <span className="home__recapLabel">Details</span>
-          </button>
+          <span className="home__monthActions">
+            <StreakBadge streak={usage.streak} />
+            <button
+              type="button"
+              className="home__recapBtn"
+              onClick={onRecap}
+              title="Usage recap"
+              aria-label="Usage recap"
+            >
+              <RecapIcon />
+              <span className="home__recapLabel">Details</span>
+            </button>
+          </span>
         </div>
         <div className="rangeRow__item">
           <span className="rangeRow__label">Burn rate</span>
@@ -385,7 +616,7 @@ function TokenStats({ state, onRecap }: { state: StateView; onRecap: () => void 
         </div>
       </div>
 
-      <MonthTrend days={usage.month_daily} todayKey={usage.today_date} />
+      <ActivityPanel state={state} />
 
       <div className="breakdown">
         <span className="breakdown__title">Claude Code</span>

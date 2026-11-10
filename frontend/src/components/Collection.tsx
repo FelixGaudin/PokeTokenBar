@@ -17,7 +17,14 @@ import {
 } from "../lib/dex";
 import { DexLink, Panel, RarityBadge, ShinyBadge, Sprite } from "./Primitives";
 import { PokemonDetail } from "./PokemonDetail";
-import type { DexEntryView, DexSpeciesView, Rarity, StateView } from "../types";
+import type {
+  DexBadgeView,
+  DexEntryView,
+  DexSpeciesView,
+  Rarity,
+  RegionProgressView,
+  StateView,
+} from "../types";
 
 const RARITIES: Rarity[] = ["legendary", "rare", "uncommon", "common"];
 const PAGE_SIZE = 16;
@@ -40,11 +47,13 @@ export function Collection({
   const [query, setQuery] = useState("");
   const [shinyOnly, setShinyOnly] = useState(false);
   const [rarity, setRarity] = useState<Rarity | null>(null);
+  // Collection-level: kept across a switch to the catch log, which ignores it.
+  const [regionKey, setRegionKey] = useState<string | null>(null);
   const [dexSort, setDexSort] = useState<DexSort>(DEX_SORT_DEFAULT);
   const [logSort, setLogSort] = useState<LogSort>(LOG_SORT_DEFAULT);
 
   // The page resets to 0 whenever a filter, the search or the sort changes.
-  const dexKey = `${query}|${shinyOnly}|${rarity}|${dexSort}`;
+  const dexKey = `${query}|${shinyOnly}|${rarity}|${regionKey}|${dexSort}`;
   const [pageState, setPageState] = useState({ key: dexKey, page: 0 });
   const logKey = `${query}|${shinyOnly}|${rarity}|${logSort}`;
   const logRef = useRef<HTMLDivElement>(null);
@@ -84,7 +93,9 @@ export function Collection({
     onOpen(null);
   };
 
-  const filters: DexFilters = { rarity, shinyOnly, query };
+  const progress = collection.dex_progress;
+  const region = progress.regions.find((r) => r.key === regionKey) ?? null;
+  const filters: DexFilters = { rarity, shinyOnly, query, region };
 
   const segmented = (
     <div className="segmented" role="tablist">
@@ -135,6 +146,7 @@ export function Collection({
     setQuery("");
     setShinyOnly(false);
     setRarity(null);
+    setRegionKey(null);
     setDexSort(DEX_SORT_DEFAULT);
     setLogSort(LOG_SORT_DEFAULT);
   };
@@ -148,7 +160,8 @@ export function Collection({
   const sortValue = tab === "pokedex" ? dexSort : logSort;
   const sortModified =
     tab === "pokedex" ? dexSort !== DEX_SORT_DEFAULT : logSort !== LOG_SORT_DEFAULT;
-  const filtering = query.trim() !== "" || shinyOnly || rarity !== null;
+  const filtering =
+    query.trim() !== "" || shinyOnly || rarity !== null || (tab === "pokedex" && region !== null);
 
   const toolbar = (
     <>
@@ -203,6 +216,18 @@ export function Collection({
           ))}
         </select>
       </div>
+      {tab === "pokedex" && (
+        <div className="collChips" role="group" aria-label="Regions">
+          {progress.regions.map((r) => (
+            <RegionChip
+              key={r.key}
+              region={r}
+              selected={r.key === regionKey}
+              onToggle={() => setRegionKey(r.key === regionKey ? null : r.key)}
+            />
+          ))}
+        </div>
+      )}
       <div className="collChips">
         {RARITIES.map((r) => {
           const count = counts[r] ?? 0;
@@ -256,7 +281,12 @@ export function Collection({
         <Panel
           className="collPanel"
           title={`Pokédex · ${collection.pokedex.length} species`}
-          aside={filtering ? `${dex.length} shown` : undefined}
+          aside={
+            <>
+              <Medals badges={progress.badges} />
+              {filtering && `${dex.length} shown`}
+            </>
+          }
         >
           {dex.length === 0 ? (
             noResults
@@ -334,6 +364,55 @@ export function Collection({
         </Panel>
       </div>
     </div>
+  );
+}
+
+/** Owned / total for a region, with its completion glyph. The counts ignore every filter. */
+function RegionChip({
+  region,
+  selected,
+  onToggle,
+}: {
+  region: RegionProgressView;
+  selected: boolean;
+  onToggle: () => void;
+}) {
+  const glyph = region.is_shiny_complete ? "✨" : region.is_complete ? "🏅" : null;
+  const label = `${region.name} ${region.owned}/${region.total}`;
+  return (
+    <button
+      type="button"
+      className={`chip chip--region ${region.is_complete ? "is-complete" : ""} ${
+        selected ? "is-active" : ""
+      }`}
+      aria-pressed={selected}
+      aria-label={label}
+      title={label}
+      disabled={region.owned === 0 && !selected}
+      onClick={onToggle}
+    >
+      {glyph && (
+        <span className="chip__glyph" aria-hidden="true">
+          {glyph}
+        </span>
+      )}
+      {region.name} <strong>{`${region.owned}/${region.total}`}</strong>
+    </button>
+  );
+}
+
+/** Earned badges the region chips don't already show: Unown and the national dex. */
+function Medals({ badges }: { badges: DexBadgeView[] }) {
+  const shown = badges.filter((b) => b.region === null);
+  if (shown.length === 0) return null;
+  return (
+    <span className="collMedals">
+      {shown.map((b) => (
+        <span key={b.key} className="collMedal" title={b.label} role="img" aria-label={b.label}>
+          {b.emoji}
+        </span>
+      ))}
+    </span>
   );
 }
 

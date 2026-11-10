@@ -7,8 +7,10 @@ first day it covers — so "no usage" can be told apart from "not recorded yet".
 
 from __future__ import annotations
 
+from collections.abc import Sequence
 from dataclasses import dataclass, field
 from datetime import date, datetime, timedelta, tzinfo
+from typing import NamedTuple
 
 from .state import DexEntry, SaveState
 
@@ -196,3 +198,97 @@ def make_recap(state: SaveState, scope: str, offset: int, today: date, tz: tzinf
         graduated=graduated,
         can_go_back=_covers(state, previous_days[-1]),
     )
+
+
+class Streak(NamedTuple):
+    days: int
+    # False while today has no usage yet: the run is intact, today's first use extends it.
+    includes_today: bool
+
+
+def current_streak(state: SaveState, today: date) -> Streak:
+    """Consecutive days with usage, ending today or, while today is still unused, yesterday.
+
+    Uses the recap's rule for an active day (any tokens), so a run inside one week reads
+    the same here and in that week's best streak.
+    """
+
+    def active(d: date) -> bool:
+        return state.token_ledger.get(d.isoformat(), 0) > 0
+
+    includes_today = active(today)
+    cursor = today if includes_today else today - timedelta(days=1)
+    days = 0
+    while active(cursor):
+        days += 1
+        cursor -= timedelta(days=1)
+    return Streak(days, includes_today)
+
+
+ACTIVITY_WEEKS = 16
+
+
+@dataclass(frozen=True)
+class ActivityCell:
+    date: str
+    tokens: int
+    # False before recording began or after today: drawn as nothing, not as an unused day.
+    in_range: bool
+    # 0 for an unused day, then quartiles of the peak (1-4).
+    level: int
+
+
+@dataclass(frozen=True)
+class ActivityGrid:
+    # Monday-first week columns, oldest first; the last one holds today.
+    weeks: list[list[ActivityCell]]
+    peak: int
+    used_days: int
+
+
+def activity_level(tokens: int, peak: int) -> int:
+    """Quartile of the peak, upper bounds inclusive (exactly 25% is level 1)."""
+    if tokens <= 0 or peak <= 0:
+        return 0
+    for level, quarter in enumerate((1, 2, 3), start=1):
+        if tokens * 4 <= peak * quarter:
+            return level
+    return 4
+
+
+def activity_grid(
+    state: SaveState,
+    live: Sequence[tuple[str, int]],
+    today: date,
+    weeks: int = ACTIVITY_WEEKS,
+) -> ActivityGrid:
+    """Daily totals for the last `weeks` calendar weeks, from the ledger and this month's scan.
+
+    The ledger can trail the live scan by a refresh, so a live day only ever raises it.
+    """
+    days: dict[str, int] = dict(state.token_ledger)
+    for key, tokens in live:
+        if tokens > 0:
+            days[key] = max(days.get(key, 0), tokens)
+
+    starts = [d for d in (state.token_ledger_since, min((k for k, _ in live), default=None)) if d]
+    recorded_since = _parse_day(min(starts)) if starts else None
+    window_start = today - timedelta(days=today.weekday()) - timedelta(weeks=weeks - 1)
+    first = max(window_start, recorded_since or today)
+
+    cells: list[tuple[str, int, bool]] = []
+    for n in range(weeks * 7):
+        d = window_start + timedelta(days=n)
+        key = d.isoformat()
+        cells.append((key, days.get(key, 0), first <= d <= today))
+
+    peak = max((t for _, t, inside in cells if inside), default=0)
+    columns = [
+        [
+            ActivityCell(key, tokens, inside, activity_level(tokens, peak) if inside else 0)
+            for key, tokens, inside in cells[w * 7 : (w + 1) * 7]
+        ]
+        for w in range(weeks)
+    ]
+    used = sum(1 for _, t, inside in cells if inside and t > 0)
+    return ActivityGrid(weeks=columns, peak=peak, used_days=used)

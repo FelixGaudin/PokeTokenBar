@@ -18,6 +18,8 @@ DEFAULTS: dict[str, object] = {
     "animated": True,
     "keep_above": True,
     "show_bar": True,
+    # Inert until an agent hook posts to /api/agent, so on by default as upstream.
+    "agent_activity": True,
 }
 
 
@@ -69,7 +71,10 @@ class Config:
     @property
     def position(self) -> tuple[int, int]:
         x, y = self.data.get("x", 80), self.data.get("y", 80)
-        return (int(x) if isinstance(x, (int, float)) else 80, int(y) if isinstance(y, (int, float)) else 80)
+        return (
+            int(x) if isinstance(x, (int, float)) else 80,
+            int(y) if isinstance(y, (int, float)) else 80,
+        )
 
     def set(self, **values: object) -> None:
         self.data.update(values)

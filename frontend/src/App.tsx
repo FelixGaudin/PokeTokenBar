@@ -7,7 +7,7 @@ import { Home } from "./components/Home";
 import { Settings } from "./components/Settings";
 import { Shop } from "./components/Shop";
 import { Sprite } from "./components/Primitives";
-import type { CompanionEvent, Rarity, StateView } from "./types";
+import type { CompanionEvent, GrowthView, Rarity, StateView } from "./types";
 import "./styles/controls.css";
 
 const TABS = ["Home", "Shop", "Bag", "Collection", "Settings"] as const;
@@ -23,7 +23,9 @@ interface Toast {
   tone: "ok" | "error";
 }
 
-const EVENT_COPY: Record<CompanionEvent["kind"], (e: CompanionEvent) => string> = {
+type CelebrationKind = Exclude<CompanionEvent["kind"], "dex_completion">;
+
+const EVENT_COPY: Record<CelebrationKind, (e: CompanionEvent) => string> = {
   hatch: (e) =>
     e.shiny
       ? e.odds
@@ -38,6 +40,15 @@ const EVENT_COPY: Record<CompanionEvent["kind"], (e: CompanionEvent) => string> 
       : `${e.disguise_name ?? "It"} was a Ditto all along!`,
 };
 
+/** An event's identity across polls; `at` keeps a backend restart's new seq 1 apart. */
+function eventKey(e: CompanionEvent): string {
+  return `${e.seq}@${e.at}`;
+}
+
+function growthText(growth: GrowthView): string {
+  return `${growth.kind === "hatch" ? "Hatch" : "Growth"} ${growth.percent}%`;
+}
+
 export default function App() {
   const [state, setState] = useState<StateView | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -49,6 +60,8 @@ export default function App() {
   const [toasts, setToasts] = useState<Toast[]>([]);
   const [celebration, setCelebration] = useState<CompanionEvent | null>(null);
   const toastId = useRef(0);
+  // Events already shown, or present when the page loaded (those are not news).
+  const seenEvents = useRef<Set<string> | null>(null);
 
   const notify = useCallback((message: string, tone: "ok" | "error" = "ok") => {
     const id = ++toastId.current;
@@ -62,14 +75,21 @@ export default function App() {
         const next = force ? await api.refresh() : await api.state();
         setState(next);
         setError(null);
-        // The server hands out each flourish exactly once, so showing it here
-        // cannot double-fire across polls.
-        if (next.companion.event) setCelebration(next.companion.event);
+        // Every client reads the same recent events, so each is shown once per page.
+        const feed = next.companion.events;
+        const seen = seenEvents.current;
+        seenEvents.current = new Set(feed.map(eventKey));
+        if (seen !== null) {
+          for (const e of feed.filter((ev) => !seen.has(eventKey(ev)))) {
+            if (e.kind === "dex_completion") notify(`${e.title ?? ""} ${e.text}`.trim());
+            else setCelebration(e);
+          }
+        }
       } catch (err) {
         setError(err instanceof Error ? err.message : String(err));
       }
     },
-    [],
+    [notify],
   );
 
   useEffect(() => {
@@ -106,6 +126,13 @@ export default function App() {
     const timer = window.setTimeout(() => setCelebration(null), 5000);
     return () => window.clearTimeout(timer);
   }, [celebration]);
+
+  const titleGrowth = state?.meta.growth_in_title ? growthText(state.companion.growth) : null;
+  useEffect(() => {
+    // The tab title stands in for the menu bar: the growth text first, so it survives
+    // truncation in a crowded tab strip.
+    document.title = titleGrowth ? `${titleGrowth} · PokeTokenBar` : "PokeTokenBar";
+  }, [titleGrowth]);
 
   const setTab = useCallback((next: Tab) => {
     setTabState(next);
@@ -164,7 +191,10 @@ export default function App() {
           </span>
           <span>
             <strong>PokeTokenBar</strong>
-            <small>{tokens(state.usage.today.total_tokens)} today</small>
+            <small>
+              {tokens(state.usage.today.total_tokens)} today
+              {titleGrowth && ` · ${titleGrowth}`}
+            </small>
           </span>
         </div>
 
@@ -240,6 +270,9 @@ export default function App() {
             onLanguage={(code) => void act(() => api.setLanguage(code))}
             onDifficulty={(growth, shop) => void act(() => api.setDifficulty(growth, shop))}
             onLimitDisplay={(mode) => void act(() => api.setLimitDisplay(mode))}
+            onTrendWindow={(window) => void act(() => api.setTrendWindow(window))}
+            onGrowthInTitle={(enabled) => void act(() => api.setGrowthInTitle(enabled))}
+            onBackView={(enabled) => void act(() => api.setBackView(enabled))}
             onImported={() => void load()}
             notify={notify}
           />
@@ -258,7 +291,9 @@ export default function App() {
                 alt=""
               />
             )}
-            <p className="celebration__text">{EVENT_COPY[celebration.kind](celebration)}</p>
+            <p className="celebration__text">
+              {EVENT_COPY[celebration.kind as CelebrationKind](celebration)}
+            </p>
           </div>
         </div>
       )}

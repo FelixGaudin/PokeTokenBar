@@ -1,10 +1,12 @@
 import type {
+  ActivityViewKind,
   PokemonDetailView,
   Rarity,
   RecapScope,
   RecapView,
   SnapshotView,
   StateView,
+  TrendWindow,
 } from "../types";
 
 async function request<T>(path: string, init?: RequestInit): Promise<T> {
@@ -56,6 +58,26 @@ export const api = {
       method: "POST",
       body: JSON.stringify({ mode }),
     }),
+  setTrendWindow: (window: TrendWindow) =>
+    request<{ ok: boolean; message: string | null }>("/api/settings/trend-window", {
+      method: "POST",
+      body: JSON.stringify({ window }),
+    }),
+  setActivityView: (view: ActivityViewKind) =>
+    request<{ ok: boolean; message: string | null }>("/api/settings/activity-view", {
+      method: "POST",
+      body: JSON.stringify({ view }),
+    }),
+  setGrowthInTitle: (enabled: boolean) =>
+    request<{ ok: boolean; message: string | null }>("/api/settings/growth-in-title", {
+      method: "POST",
+      body: JSON.stringify({ enabled }),
+    }),
+  setBackView: (enabled: boolean) =>
+    request<{ ok: boolean; message: string | null }>("/api/settings/back-view", {
+      method: "POST",
+      body: JSON.stringify({ enabled }),
+    }),
   recap: (scope: RecapScope, offset: number) =>
     request<RecapView>(`/api/recap?scope=${scope}&offset=${offset}`),
   pokemon: (speciesId: number, form?: string | null) =>
@@ -78,13 +100,15 @@ export const api = {
 
 export function spriteUrl(
   speciesId: number,
-  opts: { animated?: boolean; shiny?: boolean; form?: string | null } = {},
+  opts: { animated?: boolean; shiny?: boolean; form?: string | null; back?: boolean } = {},
 ): string {
   const params = new URLSearchParams();
   params.set("animated", String(opts.animated ?? true));
   params.set("shiny", String(opts.shiny ?? false));
   // The individual's form for its line; the server shows the species' own version of it.
   if (opts.form) params.set("form", opts.form);
+  // The server falls back to the front only once every back picture is confirmed missing.
+  if (opts.back) params.set("back", "true");
   return `/api/sprite/${speciesId}?${params.toString()}`;
 }
 

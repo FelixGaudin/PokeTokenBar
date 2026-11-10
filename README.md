@@ -19,7 +19,7 @@ sprite downloads, and (optionally) the official limits call.
 │  265.8M   265,800,000                        $49.25   │
 │  This week 1.33B    This month 5.32B    Burn 87K/min  │
 │                                                        │
-│  Limits (official)                              Max 20x│
+│  Limits (official)                                Ultra│
 │  5-hour session                                   62%  │
 │  Weekly                                           31%  │
 └────────────────────────────────────────────────────────┘
@@ -104,10 +104,20 @@ There is no family fallback: an unknown model id has no price rather than borrow
 guess. Its cost reads **Unavailable** (logged once per model so a missing row gets
 noticed), and a total that is only partly priced shows the known part.
 
-The Home tab shows a day-by-day bar chart of the current month, and a **usage recap** for
-any calendar week, month or year. Logs only cover the current month, so each refresh copies
-daily totals into a ledger kept in the save (this year and last year), which also records
-the first day it covers — "no usage" and "not recorded yet" are told apart.
+The Home tab has an activity row and a **usage recap** for any calendar week, month or
+year. Logs only cover recent weeks, so each refresh copies daily totals into a ledger kept
+in the save (this year and last year), which also records the first day it covers — "no
+usage" and "not recorded yet" are told apart.
+
+- **Daily bars.** Pick the last 7, 14 or 21 days, or this month, from the chart's title
+  (also in Settings → Display). Hover a day for its total and cost.
+- **16-week grid.** Click the row to switch to a GitHub-style grid of daily totals, Monday
+  first, shaded by quarter of the peak. Days before recording began stay blank. The choice
+  is remembered.
+- **Streak.** A flame next to the recap button counts consecutive days with usage, from
+  two. It stays gray until today's first usage extends the run.
+- **Growth %.** Settings → Display can put "Growth 42%" (or "Hatch 40%" for an egg) in the
+  top bar and the browser tab title, floored exactly like the Home card.
 
 ### Adding another provider
 
@@ -122,7 +132,9 @@ nothing else needs to change.
 Optional, on by default. The container reads `~/.claude/.credentials.json` (mounted
 read-only), takes the OAuth access token, and calls
 `https://api.anthropic.com/api/oauth/usage` for your real 5-hour and weekly percentages
-plus your plan label.
+plus your plan label. The plan name comes from your profile when it has one; otherwise
+the credential's tier is used, with Max 5x and Max 20x shown as **Max** and **Ultra**. A
+plan without a 5-hour limit just shows its weekly row.
 
 Set `PTB_LIMITS_ENABLED=0` to skip the credential read and the outbound call entirely. The
 rolling 5-hour block is computed from local logs either way, so you keep a usable
@@ -221,6 +233,16 @@ more than earlier ones.
   thresholds) and shop prices. Changing growth keeps the fraction you have earned and never
   evolves or hatches on the spot. It is a preference, not part of the save.
 
+- **Regional Pokédex.** The Pokédex filters by Kanto, Johto, Hoenn, Sinnoh or Unova and
+  counts what you own of each (forms count once). Completing a region, its shiny set, all
+  28 Unown forms or the national dex of 649 earns a cosmetic badge, announced once per
+  save. Old completions are not announced again after an update or an import.
+- **Prayers.** Click the egg on the floating pet to pray over it. Prayers are counted, carry
+  over to the Pokémon and its Pokédex entry ("Born after 31 prayers"), and never change
+  any roll.
+- **Sulking.** After three hours without token usage, a hatched Pokémon turns its back on
+  you until you get back to work. Settings → Display can show the back view all the time.
+
 ### Shop
 
 Every token you have ever spent is currency. Buying only draws down the wallet — it never
@@ -302,20 +324,24 @@ start. A cold scan of 82 session files takes ~0.8s; warm scans are ~25ms.
 
 ## API
 
-| Endpoint | Purpose |
-| --- | --- |
-| `GET /api/state` | Everything the UI renders |
-| `GET /api/health` | Log roots found, credential mounted, last refresh |
-| `POST /api/refresh` | Force a re-scan now |
-| `POST /api/shop/item` · `/api/shop/egg` | Purchases |
-| `POST /api/bag/candy` (`{count}`) · `/api/bag/mint` | Use an item |
-| `GET /api/pokemon/{id}?form=` | Detail page: stats, moves, individuals |
-| `GET /api/recap?scope=week\|month\|year&offset=` | Usage recap |
-| `POST /api/settings/difficulty` · `/limit-display` | Preferences |
-| `GET` / `POST /api/snapshots` · `POST /api/snapshots/{id}/restore` | Backups |
-| `GET` / `POST /api/save` | Export / import your save |
-| `GET /api/sprite/{id}?animated=&shiny=&form=` | Cached sprite proxy |
-| `GET /docs` | Interactive OpenAPI schema |
+| Endpoint                                                           | Purpose                                                         |
+| ------------------------------------------------------------------ | --------------------------------------------------------------- |
+| `GET /api/state?agent_after=`                                      | Everything the UI renders; agent events after a sequence number |
+| `GET /api/health`                                                  | Log roots found, credential mounted, last refresh               |
+| `POST /api/refresh`                                                | Force a re-scan now                                             |
+| `POST /api/shop/item` · `/api/shop/egg`                            | Purchases                                                       |
+| `POST /api/bag/candy` (`{count}`) · `/api/bag/mint`                | Use an item                                                     |
+| `POST /api/companion/pray`                                         | Pray over the egg (the floating pet's click)                    |
+| `POST /api/agent?state=&label=&message=`                           | A coding agent's state, for the floating pet                    |
+| `GET /api/pokemon/{id}?form=`                                      | Detail page: stats, moves, individuals                          |
+| `GET /api/recap?scope=week\|month\|year&offset=`                   | Usage recap                                                     |
+| `POST /api/settings/difficulty` · `/limit-display`                 | Preferences                                                     |
+| `POST /api/settings/trend-window` · `/activity-view`               | Activity row preferences                                        |
+| `POST /api/settings/growth-in-title` · `/back-view`                | Display preferences                                             |
+| `GET` / `POST /api/snapshots` · `POST /api/snapshots/{id}/restore` | Backups                                                         |
+| `GET` / `POST /api/save`                                           | Export / import your save                                       |
+| `GET /api/sprite/{id}?animated=&shiny=&form=&back=`                | Cached sprite proxy; 503 means retry later                      |
+| `GET /docs`                                                        | Interactive OpenAPI schema                                      |
 
 Importing a save re-seeds the usage baseline from *this* machine's logs, so today's
 existing tokens aren't credited twice.
