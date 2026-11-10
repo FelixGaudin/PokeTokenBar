@@ -42,6 +42,8 @@ export interface DexFilters {
   rarity: Rarity | null;
   shinyOnly: boolean;
   query: string;
+  /** National dex range of the selected region. The catch log ignores it. */
+  region: { first: number; last: number } | null;
 }
 
 /**
@@ -78,6 +80,7 @@ export function filterSpecies(list: DexSpeciesView[], f: DexFilters): DexSpecies
   return list.filter(
     (s) =>
       (f.rarity === null || s.rarity === f.rarity) &&
+      (f.region === null || (f.region.first <= s.species_id && s.species_id <= f.region.last)) &&
       (!f.shinyOnly || s.is_shiny) &&
       speciesMatches(s, f.query),
   );

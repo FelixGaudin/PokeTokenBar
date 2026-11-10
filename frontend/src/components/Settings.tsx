@@ -1,8 +1,9 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { api } from "../lib/api";
 import { tokens } from "../lib/format";
+import { WINDOW_ORDER, WINDOW_TITLES } from "../lib/trend";
 import { Panel, Sprite } from "./Primitives";
-import type { SnapshotView, StateView } from "../types";
+import type { SnapshotView, StateView, TrendWindow } from "../types";
 
 /** Exactly 100 % within this distance of its slider position. */
 const DEFAULT_SNAP_WIDTH = 0.01;
@@ -97,6 +98,9 @@ export function Settings({
   onLanguage,
   onDifficulty,
   onLimitDisplay,
+  onTrendWindow,
+  onGrowthInTitle,
+  onBackView,
   onImported,
   notify,
 }: {
@@ -105,6 +109,9 @@ export function Settings({
   onLanguage: (code: string) => void;
   onDifficulty: (growth: number, shop: number) => void;
   onLimitDisplay: (mode: "used" | "remaining") => void;
+  onTrendWindow: (window: TrendWindow) => void;
+  onGrowthInTitle: (enabled: boolean) => void;
+  onBackView: (enabled: boolean) => void;
   onImported: () => void;
   notify: (message: string, tone?: "ok" | "error") => void;
 }) {
@@ -281,6 +288,54 @@ export function Settings({
             </button>
           </div>
         )}
+      </Panel>
+
+      <Panel title="Display">
+        <div className="row">
+          <label htmlFor="trend-window">Daily trend period</label>
+          <select
+            id="trend-window"
+            disabled={busy}
+            value={meta.daily_trend_window}
+            onChange={(e) => onTrendWindow(e.target.value as TrendWindow)}
+          >
+            {WINDOW_ORDER.map((w) => (
+              <option key={w} value={w}>
+                {WINDOW_TITLES[w]}
+              </option>
+            ))}
+          </select>
+        </div>
+        <label className="toggleRow">
+          <input
+            type="checkbox"
+            checked={meta.growth_in_title}
+            disabled={busy}
+            onChange={(e) => onGrowthInTitle(e.target.checked)}
+          />
+          <span className="toggleRow__text">
+            <span className="toggleRow__label">Pokémon growth %</span>
+            <span className="toggleRow__hint">
+              Progress toward hatching or your companion's next evolution or graduation, in
+              the top bar and the browser tab title.
+            </span>
+          </span>
+        </label>
+        <label className="toggleRow">
+          <input
+            type="checkbox"
+            checked={meta.always_faces_back}
+            disabled={busy}
+            onChange={(e) => onBackView(e.target.checked)}
+          />
+          <span className="toggleRow__text">
+            <span className="toggleRow__label">Show back view</span>
+            <span className="toggleRow__hint">
+              Always shows its back on the Home card and the floating pet. It also turns
+              around on its own after three hours without usage.
+            </span>
+          </span>
+        </label>
       </Panel>
 
       <Panel title="Limits">

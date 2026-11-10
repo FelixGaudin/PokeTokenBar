@@ -274,6 +274,12 @@ function DetailBody({
               }
             />
           </div>
+          {individual.prayers > 0 && (
+            <div className="pd__prayers">
+              <p className="pd__text">Born after {individual.prayers} prayers</p>
+              <p className="pd__text pd__dim">Your prayers reached the heavens. Probably.</p>
+            </div>
+          )}
           <Pair
             label="Ability"
             value={

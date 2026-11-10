@@ -23,3 +23,13 @@ def percent(fraction: float) -> str:
 
 def rate(per_minute: float) -> str:
     return f"{tokens(per_minute)}/min"
+
+
+def sulking(idle_seconds: float) -> str:
+    """How long the companion has had its back turned: hours, then days from 48 h."""
+    if idle_seconds <= 0:
+        return ""
+    hours = int(idle_seconds // 3600)
+    if hours < 48:
+        return f"Sulking for {hours} hours"
+    return f"Sulking for {hours // 24} days"

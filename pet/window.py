@@ -10,20 +10,63 @@ from __future__ import annotations
 import logging
 import math
 import os
+import random
 import subprocess
 import time
+from collections.abc import Callable
 from dataclasses import dataclass
 from typing import Any
 
 import cairo
 
+# isort: off
 from . import gtk3  # noqa: F401  (pins GI versions; must precede gi.repository)
-from gi.repository import Gdk, GLib, Gtk
+from gi.repository import Gdk, Gio, GLib, Gtk, Pango, PangoCairo
 
+# isort: on
 from . import fmt
-from .bubble import Bubble
-from .client import ReconnectWatcher, StateClient
+from .agent import (
+    AWAY,
+    BOB_INTERVAL_MS,
+    BOB_SCALE,
+    HOME,
+    RETURNING,
+    RUN_DURATION,
+    AgentActivityTracker,
+    AgentBubble,
+    SpeechBubble,
+    agent_bubble_content,
+    allows_motion,
+    bubble_for,
+    ease_in_out,
+    hearts_showing,
+    is_showing_bubble,
+    latest_event,
+    resolve_move,
+    run_panel_origin,
+    runs_to_cursor,
+    should_bob,
+    should_pop_event,
+)
+from .bubble import GAP as BUBBLE_GAP
+from .bubble import Bubble, HeartBubble
+from .client import ReconnectWatcher, SpriteKey, SpriteLoad, StateClient
 from .config import SIZES, Config, autostart_file
+from .petting import (
+    HEART_DURATION_MS,
+    HEART_WIDTH,
+    PettingDetector,
+    bubble_top_offset,
+    min_stroke,
+)
+from .prayer import (
+    PARTICLE_GLYPH,
+    PARTICLE_LIFETIME,
+    PetClickRouter,
+    PrayerBurst,
+    particle_frame,
+    prayer_hover_line,
+)
 from .sprite import NOMINAL, Sprite, alpha_region
 
 log = logging.getLogger(__name__)
@@ -32,9 +75,14 @@ log = logging.getLogger(__name__)
 # nothing visible and costs CPU linearly: measured 2.3% of a core at 15fps against 1.5%
 # at 10fps, for an identical-looking pet.
 DEFAULT_FPS = 10
+# Only while a prayer's emoji flies and the egg shakes: the shake's keyframes are 60-100ms
+# apart, which 10fps would skip.
+FAST_TICK_MS = 33
+RUN_FRAME_MS = 16
 DRAG_THRESHOLD = 4  # px of movement that turns a click into a drag
 HOVER_DELAY_MS = 220
 ALERT_MS = 6000
+EVENT_POP_MS = 6000
 HOP_DURATION = 0.7  # seconds
 LIMIT_ALERT_AT = 90.0
 LIMIT_REARM_AT = 85.0  # hysteresis, so a wobbling number cannot re-trigger
@@ -70,6 +118,7 @@ class Behaviour:
     glow: bool = False
 
 
+# "sulk" has no entry on purpose: it gets FALLBACK, and in particular is not asleep.
 BEHAVIOUR: dict[str, Behaviour] = {
     "egg": Behaviour(bob=1.5, period=3.0),
     "sleep": Behaviour(bob=1.5, period=4.5, alpha=0.55),
@@ -93,6 +142,10 @@ def esc(text: object) -> str:
     return GLib.markup_escape_text(str(text))
 
 
+def _text(value: object) -> str | None:
+    return value if isinstance(value, str) and value else None
+
+
 class PetWindow(Gtk.Window):
     def __init__(
         self,
@@ -113,15 +166,18 @@ class PetWindow(Gtk.Window):
         self.state: dict[str, Any] | None = None
         self.error: str | None = None
         self.sprite: Sprite | None = None
-        self._sprite_key: tuple[int, bool, bool, str | None] | None = None
-        self._shape_key: tuple[int, int, int] | None = None
+        self._sprite_key: SpriteKey | None = None
+        self._sprite_load: SpriteLoad | None = None
+        self._shape_key: tuple[int, int, int, bool] | None = None
         self._next_frame_at = 0.0
         self._started = time.monotonic()
         self._frame_serial = 0
         self._lift_px = 0
         self._egg_rotation = 0.0
+        self._egg_wobble = 0.0
         self._render_key: tuple | None = None
         self._bar_cache: tuple[tuple, cairo.ImageSurface] | None = None
+        self._particle_layout: tuple[float, Pango.Layout] | None = None
         # Artwork bounds in window coordinates. The sprite occupies only the lower part
         # of the box, so the callout must anchor to this rather than to the window edge.
         self._art_top = 0
@@ -130,27 +186,63 @@ class PetWindow(Gtk.Window):
 
         # click/drag discrimination
         self._press: tuple[float, float, int] | None = None
+        # Set when a drag is handed to the window manager. The WM then owns the pointer
+        # and the release may never reach us, so it is cleared on the next press instead.
         self._dragging = False
         self._save_source: int | None = None
+        self._pending_save: tuple[int, int] | None = None
         self._hover_source: int | None = None
+        self._hovering = False
         self._placed = False
         self._target = (0, 0)
         self._place_attempts = 0
 
-        # edge-trigger memory for alerts
-        self._seen_species: int | None = None
-        self._seen_active = False
-        self._seen_graduated: str | None = None
+        # Limit alerts (edge-triggered) and companion event pops.
         self._limits_alerted: set[str] = set()
+        self._limit_alert: str | None = None
+        self._limit_source: int | None = None
+        self._event_seen: int | None = None
+        self._event_text: str | None = None
+        self._event_source: int | None = None
         self._first_state = True
 
-        self.bubble = Bubble()
+        # Coding agents: bob while working, run to the pointer when done.
+        self.tracker = AgentActivityTracker()
+        self._agent_source: int | None = None
+        self._bob_source: int | None = None
+        self._squashed = False
+        self.run_phase = HOME
+        self._run_source: int | None = None
+        self._run_generation = 0
+
+        # Petting and prayers.
+        self.petting = PettingDetector()
+        self._hearts_up = False
+        self._hearts_source: int | None = None
+        self.burst = PrayerBurst()
+        self._fast_source: int | None = None
+        self.router = PetClickRouter(
+            pray=self._pray,
+            spawn=self._spawn_prayer,
+            did_pray=self._prayed,
+            refresh=lambda: self.client.refresh_now(),
+            open_ui=self._open_ui,
+            clock=time.monotonic,
+        )
+
+        self.bubble = Bubble()  # hover stats and event pops
+        self.speech = Bubble()  # limit alerts and agent questions/results
+        self.hearts = HeartBubble()
         self._configure_window()
         self._build_ui()
         self._apply_geometry()
 
-        self.client = StateClient(self.base_url, interval, self._on_state, self._on_error)
+        self.client = StateClient(
+            self.base_url, interval, self._on_state, self._on_error, self._on_agent
+        )
         self.reconnect = ReconnectWatcher(self.client.refresh_now)
+        self._power: Gio.PowerProfileMonitor | None = None
+        self._watch_motion_settings()
 
     # -------------------------------------------------------------- window setup
 
@@ -229,7 +321,7 @@ class PetWindow(Gtk.Window):
         little further from home on every restart. Re-asserting until the position
         actually reads back correct is the only thing that survives muffin.
         """
-        self._target = self._clamped(*self.config.position)
+        self._target = self._home()
         self._place_attempts = 0
         GLib.timeout_add(30, self._enforce_position)
 
@@ -243,8 +335,12 @@ class PetWindow(Gtk.Window):
             if not settled:
                 log.debug("placement did not settle: wanted %s, got %s", self._target, (x, y))
             self._placed = True  # only now may a move be treated as the user's doing
+            self._sync_overlays()
             return False
         return True
+
+    def _home(self) -> tuple[int, int]:
+        return self._clamped(*self.config.position)
 
     def _clamped(self, x: int, y: int) -> tuple[int, int]:
         """Keep the pet on a monitor that still exists, after a display change."""
@@ -260,6 +356,9 @@ class PetWindow(Gtk.Window):
             max(g.y, min(y, g.y + g.height - self.box_height)),
         )
 
+    def _visible(self) -> bool:
+        return self.get_mapped()
+
     def run(self) -> None:
         self.connect("map-event", self._on_map)
         self.show_all()
@@ -270,7 +369,11 @@ class PetWindow(Gtk.Window):
     def quit(self) -> None:
         self.reconnect.stop()
         self.client.stop()
+        if self._sprite_load is not None:
+            self._sprite_load.cancel()
         self.bubble.destroy()
+        self.speech.destroy()
+        self.hearts.destroy()
         Gtk.main_quit()
 
     # ------------------------------------------------------------------ data flow
@@ -278,8 +381,10 @@ class PetWindow(Gtk.Window):
     def _on_state(self, state: dict[str, Any]) -> None:
         self.error = None
         self.state = state
-        self._sync_sprite(state)
-        self._check_alerts(state)
+        companion = state.get("companion", {})
+        self._sync_sprite(companion)
+        self._check_limits(state)
+        self._check_events(companion)
         self._first_state = False
         self.area.queue_draw()
 
@@ -287,69 +392,69 @@ class PetWindow(Gtk.Window):
         self.error = message
         self.area.queue_draw()
 
-    def _sync_sprite(self, state: dict[str, Any]) -> None:
-        active = state.get("companion", {}).get("active")
+    def _active(self) -> dict[str, Any] | None:
+        active = (self.state or {}).get("companion", {}).get("active")
+        return active if isinstance(active, dict) else None
+
+    def _is_egg(self) -> bool:
+        """Known to be an egg. Before the first state nothing is known, so no prayer."""
+        return self.state is not None and self._active() is None
+
+    def _sync_sprite(self, companion: dict[str, Any]) -> None:
+        active = companion.get("active")
         if not active:
+            self._cancel_sprite_load()
             self.sprite = None
             self._sprite_key = None
             return
-        key = (
-            int(active["species_id"]),
-            bool(self.config.get("animated", True)),
-            bool(active["is_shiny"]),
-            active.get("form"),
+        key = SpriteKey(
+            species_id=int(active["species_id"]),
+            animated=bool(self.config.get("animated", True)),
+            shiny=bool(active["is_shiny"]),
+            form=active.get("form"),
+            back=bool(companion.get("faces_back")),
         )
-        if key == self._sprite_key and self.sprite is not None:
+        if key == self._sprite_key:
             return
-        data = self.client.sprite(
-            key[0],
-            animated=key[1],
-            shiny=key[2],
-            form=key[3],
-            on_ready=lambda raw: self._install_sprite(key, raw),
-        )
-        if data is not None:
-            self._install_sprite(key, data)
+        self._sprite_key = key
+        self._cancel_sprite_load()
+        cached = self.client.cached_sprite(key)
+        if cached is not None:
+            self._install_sprite(key, cached)
+            return
+        # The previous sprite stays up only while the first request is in flight; the
+        # loader hands over a stand-in (or nothing) as soon as that request fails.
+        self._sprite_load = self.client.load_sprite(key, lambda data: self._on_sprite(key, data))
 
-    def _install_sprite(self, key: tuple[int, bool, bool, str | None], data: bytes) -> None:
+    def _cancel_sprite_load(self) -> None:
+        if self._sprite_load is not None:
+            self._sprite_load.cancel()
+            self._sprite_load = None
+
+    def _on_sprite(self, key: SpriteKey, data: bytes | None) -> None:
+        if data is None:
+            # Not even the static image came through. Show nothing rather than the
+            # previous species; the load keeps retrying.
+            self.sprite = None
+            self._shape_key = None
+            self.area.queue_draw()
+            return
+        self._install_sprite(key, data)
+
+    def _install_sprite(self, key: SpriteKey, data: bytes) -> None:
         try:
             self.sprite = Sprite(data)
         except (ValueError, GLib.Error) as exc:
-            log.warning("could not decode sprite %s: %s", key[0], exc)
-            return
-        self._sprite_key = key
+            log.warning("could not decode sprite %s: %s", key.species_id, exc)
+            self.sprite = None
         self._shape_key = None
         self._next_frame_at = 0.0
         self.area.queue_draw()
 
-    # --------------------------------------------------------------------- alerts
+    # ------------------------------------------------------- limit alerts, events
 
-    def _check_alerts(self, state: dict[str, Any]) -> None:
-        """Derive flourishes by diffing successive polls.
-
-        /api/state hands `event` to whichever client polls first, so with a browser tab
-        open the pet cannot rely on it. Diffing the companion instead means both clients
-        can show the same milestones.
-        """
-        companion = state.get("companion", {})
-        active = companion.get("active")
-        species = int(active["species_id"]) if active else None
-        name = esc(active["name"]) if active else ""
-
+    def _check_limits(self, state: dict[str, Any]) -> None:
         alerts: list[str] = []
-        if not self._first_state:
-            if active and not self._seen_active:
-                alerts.append(f"<b>It hatched!</b>\nSay hello to {name}.")
-            elif active and species != self._seen_species and self._seen_species is not None:
-                alerts.append(f"<b>{name}</b>\nevolved!")
-            graduated = companion.get("just_graduated")
-            if graduated and graduated != self._seen_graduated:
-                alerts.append(f"<b>{esc(graduated)}</b>\ngraduated to the Pokedex!")
-
-        self._seen_species = species
-        self._seen_active = bool(active)
-        self._seen_graduated = companion.get("just_graduated")
-
         for window in state.get("limits", {}).get("windows", []):
             key = str(window.get("key", ""))
             util = float(window.get("utilization", 0.0))
@@ -358,21 +463,125 @@ class PetWindow(Gtk.Window):
                 alerts.append(f"<b>{esc(window.get('name', key))}</b>\nat {util:.0f}% -- ease off?")
             elif util < LIMIT_REARM_AT:
                 self._limits_alerted.discard(key)
+        if not alerts:
+            return
+        self._hop_until = time.monotonic() + HOP_DURATION
+        self._limit_alert = "\n".join(alerts)
+        self._limit_source = self._restart(self._limit_source, ALERT_MS, self._limit_expired)
+        self._sync_overlays()
 
-        if alerts:
-            self._hop_until = time.monotonic() + HOP_DURATION
-            self._show_bubble("\n".join(alerts), timeout_ms=ALERT_MS)
+    def _limit_expired(self) -> bool:
+        self._limit_source = None
+        self._limit_alert = None
+        self._sync_overlays()
+        return False
 
-    # ---------------------------------------------------------------- the callout
+    def _check_events(self, companion: dict[str, Any]) -> None:
+        """Pop the callout for a hatch, evolution, graduation, Ditto reveal...
+
+        `companion.events` is never consumed by reading, so the pet and a browser tab
+        both see every event. Whatever is already there on the first poll is not news;
+        an event that arrives while a speech bubble or hearts show is dropped, not
+        queued.
+        """
+        event = latest_event(companion.get("events"))
+        if event is None:
+            return
+        seq = event["seq"]
+        if self._first_state:
+            self._event_seen = seq
+            return
+        if seq == self._event_seen:
+            return
+        pop = should_pop_event(seq, self._event_seen, self._visible(), self._showing_bubble())
+        self._event_seen = seq
+        text = _text(event.get("text"))
+        if not pop or text is None:
+            return
+        self._event_text = text
+        self._hop_until = time.monotonic() + HOP_DURATION
+        self._event_source = self._restart(self._event_source, EVENT_POP_MS, self._event_expired)
+        self._show_callout()
+
+    def _event_expired(self) -> bool:
+        self._event_source = None
+        self._event_text = None
+        if self._hovering:
+            self._show_callout()
+        else:
+            self.bubble.hide()
+        return False
+
+    @staticmethod
+    def _restart(source: int | None, ms: int, callback: Callable[[], bool]) -> int:
+        """A one-shot timer that each new trigger pushes back."""
+        if source is not None:
+            GLib.source_remove(source)
+        return GLib.timeout_add(ms, callback)
+
+    # ------------------------------------------------------- what shows above the pet
+
+    def _showing_bubble(self) -> bool:
+        alert_active = self._limit_alert is not None
+        return is_showing_bubble(alert_active, self._hearts_up, self.tracker.summary)
+
+    def _sync_overlays(self) -> None:
+        """Speech bubble over hearts over the hover/event callout."""
+        visible = self._visible()
+        speech = bubble_for(self._limit_alert, self.tracker.summary)
+        if speech is not None and visible:
+            self._show_speech(speech)
+            self.hearts.hide()
+            self._hide_callout()
+            return
+        self.speech.hide()
+        if self._hearts_up and visible:
+            self._place_hearts()
+            self._hide_callout()
+        else:
+            self.hearts.hide()
+
+    def _show_speech(self, speech: SpeechBubble) -> None:
+        anchor_x, top, bottom = self._anchor()
+        if isinstance(speech, AgentBubble):
+            # Labels and messages come from any local process: escape before Pango sees them.
+            title, body = agent_bubble_content(speech, lambda t: self.speech.title_fits(esc(t)))
+            self.speech.show_speech(
+                esc(title), esc(body), anchor_x=anchor_x, above_y=top, below_y=bottom
+            )
+        else:
+            self.speech.show(str(speech.alert), anchor_x=anchor_x, above_y=top, below_y=bottom)
+
+    def _follow_overlays(self) -> None:
+        if not (self.speech.visible or self.bubble.visible or self.hearts.visible):
+            return
+        anchor_x, top, bottom = self._anchor()
+        self.speech.reposition(anchor_x=anchor_x, above_y=top, below_y=bottom)
+        self.bubble.reposition(anchor_x=anchor_x, above_y=top, below_y=bottom)
+        if self.hearts.visible:
+            self._place_hearts()
 
     def _anchor(self) -> tuple[int, int, int]:
-        """Screen-space anchor for the callout: centre, top of art, bottom of art."""
+        """Screen-space anchor for the callouts: centre, top of art, bottom of art."""
         x, y = self.get_position()
         return x + self.size // 2, y + self._art_top, y + self._art_bottom
 
     def _show_bubble(self, markup: str, timeout_ms: int | None) -> None:
         anchor_x, top, bottom = self._anchor()
-        self.bubble.show(markup, anchor_x=anchor_x, above_y=top, below_y=bottom, timeout_ms=timeout_ms)
+        self.bubble.show(
+            markup, anchor_x=anchor_x, above_y=top, below_y=bottom, timeout_ms=timeout_ms
+        )
+
+    def _show_callout(self) -> None:
+        """The hover/event callout, unless a speech bubble or hearts have the space."""
+        if self._showing_bubble() or not self._visible():
+            self._hide_callout()
+            return
+        self._show_bubble(self._hover_markup(), timeout_ms=None)
+
+    def _hide_callout(self) -> None:
+        self._cancel_hover()
+        self.bubble.hide()
 
     def _hover_markup(self) -> str:
         if self.state is None:
@@ -384,6 +593,13 @@ class PetWindow(Gtk.Window):
         companion = state.get("companion", {})
         active = companion.get("active")
         lines: list[str] = []
+        # The server's integer floor: rounding here would read 99.6% as 100% before an
+        # evolution, disagreeing with the web UI.
+        growth = companion.get("growth") or {}
+        percent = growth.get("percent")
+        if not isinstance(percent, int):
+            source = active if active else companion.get("egg", {})
+            percent = math.floor(float(source.get("progress") or 0.0) * 100)
 
         if active:
             marks = " <span foreground='#ffd76e'>SHINY</span>" if active.get("is_shiny") else ""
@@ -398,22 +614,23 @@ class PetWindow(Gtk.Window):
             else:
                 target = f"{fmt.tokens(active['tokens_to_next'])} to next form"
             lines.append(
-                f"<span size='small'>{esc(stage)} - {fmt.percent(float(active['progress']))}"
-                f"\n{esc(target)}</span>"
+                f"<span size='small'>{esc(stage)} - Growth {percent}%\n{esc(target)}</span>"
             )
         else:
             egg = companion.get("egg", {})
             lines.append("<b>Egg</b>")
             lines.append(
                 f"<span size='small'>{fmt.tokens(egg.get('tokens_to_hatch', 0))} to hatch"
-                f" - {fmt.percent(float(egg.get('progress', 0.0)))} warm</span>"
+                f" - Hatch {percent}%</span>"
             )
 
         today = usage.get("today", {})
+        sulk = fmt.sulking(float(companion.get("sulk_idle_seconds") or 0.0))
+        sulk_part = f"<span size='small' foreground='#9aa3b2'> · {esc(sulk)}</span>" if sulk else ""
         lines.append(
             "<span size='small' foreground='#9aa3b2'>Today  </span>"
             f"<span size='small'><b>{fmt.tokens(today.get('total_tokens', 0))}</b>"
-            f"  {fmt.cost(float(today.get('cost', 0.0)))}</span>"
+            f"  {fmt.cost(float(today.get('cost', 0.0)))}</span>{sulk_part}"
         )
         lines.append(
             "<span size='small' foreground='#9aa3b2'>Burn   </span>"
@@ -441,12 +658,255 @@ class PetWindow(Gtk.Window):
         else:
             windows = limits.get("windows", [])
             if windows:
-                parts = " - ".join(f"{esc(w['name'])} {float(w['utilization']):.0f}%" for w in windows)
+                parts = " - ".join(
+                    f"{esc(w['name'])} {float(w['utilization']):.0f}%" for w in windows
+                )
                 stale = " <span foreground='#e0a34a'>(stale)</span>" if limits.get("stale") else ""
                 lines.append(f"<span size='small' foreground='#9aa3b2'>{parts}</span>{stale}")
+        if self._event_text:
+            lines.append(f"<b>{esc(self._event_text)}</b>")
+        if not active:
+            prayers = companion.get("egg", {}).get("prayers") or 0
+            if isinstance(prayers, int) and prayers > 0:
+                lines.append(f"<span size='small'>{esc(prayer_hover_line(prayers))}</span>")
         if self.error:
             lines.append(f"<span size='small' foreground='#e0a34a'>{esc(self.error)}</span>")
         return "\n".join(lines)
+
+    # -------------------------------------------------------------- agent activity
+
+    def _agent_enabled(self) -> bool:
+        return bool(self.config.get("agent_activity", True))
+
+    def _on_agent(self, events: list[dict]) -> None:
+        if not self._agent_enabled():
+            return
+        now = time.monotonic()
+        for event in events:
+            self.tracker.apply(
+                event["state"], _text(event.get("label")), _text(event.get("message")), now
+            )
+        self._agent_did_change()
+
+    def _agent_did_change(self) -> None:
+        summary = self.tracker.summary
+        motion = self._motion_allowed()
+        self._set_bob(should_bob(summary.working, motion))
+        self._schedule_agent_expiry()
+        self._sync_overlays()
+        if summary.done is not None:
+            if runs_to_cursor(self.run_phase, motion, self._visible()):
+                self._run_to_cursor()
+        else:
+            self._return_home()
+
+    def _schedule_agent_expiry(self) -> None:
+        """Exactly one timer, at the tracker's deadline; none while idle or waiting."""
+        if self._agent_source is not None:
+            GLib.source_remove(self._agent_source)
+            self._agent_source = None
+        deadline = self.tracker.deadline
+        if deadline is None:
+            return
+        delay = max(0, math.ceil((deadline - time.monotonic()) * 1000))
+        self._agent_source = GLib.timeout_add(delay, self._expire_agent)
+
+    def _expire_agent(self) -> bool:
+        self._agent_source = None
+        if self.tracker.expire(time.monotonic()):
+            self._agent_did_change()
+        else:
+            self._schedule_agent_expiry()  # fired early: arm again rather than get stuck
+        return False
+
+    def _acknowledge_agents(self) -> None:
+        """A click answers waiting agents and acknowledges results. Work goes on."""
+        if self.tracker.dismiss_bubble():
+            self._agent_did_change()
+
+    def _reset_agent(self) -> None:
+        self.tracker.reset()
+        self._schedule_agent_expiry()
+        self._set_bob(False)
+        self._stop_run()
+        if self.run_phase != HOME:
+            self.run_phase = HOME
+            self.move(*self._home())
+        self._sync_overlays()
+
+    def _set_bob(self, on: bool) -> None:
+        """The squash loop exists only while bobbing: idle leaves no timer behind."""
+        if on and self._bob_source is None:
+            self._bob_source = GLib.timeout_add(BOB_INTERVAL_MS, self._toggle_bob)
+        elif not on and self._bob_source is not None:
+            GLib.source_remove(self._bob_source)
+            self._bob_source = None
+            self._squashed = False
+
+    def _toggle_bob(self) -> bool:
+        self._squashed = not self._squashed
+        self._tick()  # draw the new pose now rather than at the next frame
+        return True
+
+    def _run_to_cursor(self) -> None:
+        display = Gdk.Display.get_default()
+        seat = display.get_default_seat() if display is not None else None
+        pointer = seat.get_pointer() if seat is not None else None
+        if pointer is None:
+            return
+        _screen, cx, cy = pointer.get_position()
+        monitor = display.get_monitor_at_point(cx, cy)
+        if monitor is None:
+            return
+        area = monitor.get_workarea()
+        # The speech bubble sits above the pet, so it counts as part of what must fit.
+        bubble_w, bubble_h = self.speech.size if self.speech.visible else (0, 0)
+        headroom = max(0, bubble_h + BUBBLE_GAP - self._art_top)
+        width, height = max(self.size, bubble_w), self.box_height + headroom
+        workarea = (area.x, area.y, area.width, area.height)
+        x, y = run_panel_origin((cx, cy), (width, height), workarea)
+        self._dragging = False
+        self.run_phase = AWAY
+        self._hide_callout()
+        self._animate_to((x + (width - self.size) // 2, y + headroom))
+
+    def _return_home(self) -> None:
+        if self.run_phase != AWAY:
+            return  # home already, or on the way
+        if not (self._visible() and self._motion_allowed()):
+            self._stop_run()
+            self.run_phase = HOME
+            self.move(*self._home())
+            return
+        self.run_phase = RETURNING
+
+        def arrived() -> None:
+            if self.run_phase == RETURNING:
+                self.run_phase = HOME
+
+        self._animate_to(self._home(), arrived)
+
+    def _animate_to(
+        self, target: tuple[int, int], on_done: Callable[[], None] | None = None
+    ) -> None:
+        self._stop_run()
+        generation = self._run_generation
+        start_x, start_y = self.get_position()
+        target_x, target_y = target
+        started = time.monotonic()
+
+        def step() -> bool:
+            if generation != self._run_generation:
+                return False
+            t = (time.monotonic() - started) / RUN_DURATION
+            eased = ease_in_out(t)
+            self.move(
+                round(start_x + (target_x - start_x) * eased),
+                round(start_y + (target_y - start_y) * eased),
+            )
+            if t < 1:
+                return True
+            self._run_source = None
+            if on_done is not None:
+                on_done()
+            return False
+
+        self._run_source = GLib.timeout_add(RUN_FRAME_MS, step)
+
+    def _stop_run(self) -> None:
+        """Stop an in-flight run or return; a stale step can then do nothing."""
+        self._run_generation += 1
+        if self._run_source is not None:
+            GLib.source_remove(self._run_source)
+            self._run_source = None
+
+    # -------------------------------------------------------------- motion gating
+
+    def _watch_motion_settings(self) -> None:
+        try:
+            self._power = Gio.PowerProfileMonitor.get_default()
+        except (AttributeError, GLib.Error) as exc:  # GLib < 2.70
+            log.debug("no power profile monitor: %s", exc)
+            self._power = None
+        if self._power is not None:
+            self._power.connect("notify::power-saver-enabled", self._on_motion_changed)
+        settings = Gtk.Settings.get_default()
+        if settings is not None:
+            settings.connect("notify::gtk-enable-animations", self._on_motion_changed)
+
+    def _motion_allowed(self) -> bool:
+        """Power saver and turned-off desktop animations still the bob and the run."""
+        power_saver = self._power is not None and bool(self._power.get_power_saver_enabled())
+        settings = Gtk.Settings.get_default()
+        animations = settings is None or bool(settings.props.gtk_enable_animations)
+        return allows_motion(bool(self.config.get("animated", True)), power_saver, animations)
+
+    def _on_motion_changed(self, *_args: object) -> None:
+        self._set_bob(should_bob(self.tracker.summary.working, self._motion_allowed()))
+
+    # ---------------------------------------------------------- petting, prayers
+
+    def _pet_stroked(self) -> None:
+        if not hearts_showing(self._limit_alert is not None, self.tracker.summary):
+            return
+        self._hearts_up = True
+        self._hearts_source = self._restart(
+            self._hearts_source, HEART_DURATION_MS, self._hearts_expired
+        )
+        self._hide_callout()
+        self._sync_overlays()
+
+    def _hearts_expired(self) -> bool:
+        self._hearts_source = None
+        self._hearts_up = False
+        self._sync_overlays()
+        if self._hovering:
+            self._show_callout()
+        return False
+
+    def _place_hearts(self) -> None:
+        x, y = self.get_position()
+        self.hearts.show(
+            x + self.size // 2 - HEART_WIDTH // 2, y + bubble_top_offset(self._visible_top())
+        )
+
+    def _visible_top(self) -> float:
+        """Where the art visibly starts, in window coordinates: the hearts' tail goes there."""
+        if self.sprite is None:
+            return float(self._art_top)
+        pixbuf = self.sprite.scaled(self.size)
+        _x, y = Sprite.placement(pixbuf, self.size)
+        return y - self._lift_px + self.sprite.opaque_top_fraction() * pixbuf.get_height()
+
+    def _pray(self) -> None:
+        self.client.post_json("/api/companion/pray", None, self._on_prayer_counted)
+
+    def _on_prayer_counted(self, result: dict[str, Any]) -> None:
+        count = result.get("count")
+        if isinstance(count, int):
+            self.router.prayed(count)
+
+    def _spawn_prayer(self) -> None:
+        self.burst.spawn(time.monotonic(), random.random())
+        if self._fast_source is None:
+            self._fast_source = GLib.timeout_add(FAST_TICK_MS, self._fast_tick)
+
+    def _prayed(self, count: int) -> None:
+        """Show the new count at once instead of on the next poll."""
+        egg = (self.state or {}).get("companion", {}).get("egg")
+        if isinstance(egg, dict) and self._is_egg():
+            egg["prayers"] = count
+        if self.bubble.visible:
+            self._show_callout()
+
+    def _fast_tick(self) -> bool:
+        now = time.monotonic()
+        self.burst.prune(now)
+        self._tick()
+        if self.burst.active(now):
+            return True
+        self._fast_source = None
+        return False
 
     # ------------------------------------------------------------------- painting
 
@@ -460,7 +920,7 @@ class PetWindow(Gtk.Window):
         return min(1.0, max(0.0, float(raw or 0.0)))
 
     def _bar_colours(self) -> tuple[tuple[float, float, float], tuple[float, float, float]]:
-        active = (self.state or {}).get("companion", {}).get("active")
+        active = self._active()
         if active and active.get("is_shiny"):
             return SHINY_LIGHT, SHINY_DARK
         return EXP_LIGHT, EXP_DARK
@@ -491,7 +951,7 @@ class PetWindow(Gtk.Window):
         if now < self._hop_until:
             progress = 1.0 - (self._hop_until - now) / HOP_DURATION
             hop = abs(math.sin(progress * 3 * math.pi)) * 7 * scale * (1.0 - progress)
-        return int(round(bob + hop))
+        return round(bob + hop)
 
     def _egg_angle(self) -> float:
         """Wobble, on the same 3s period as the web UI's egg.
@@ -522,18 +982,74 @@ class PetWindow(Gtk.Window):
         if self.sprite is not None:
             pixbuf = self.sprite.scaled(self.size)
             x, y = Sprite.placement(pixbuf, self.size)
+            cr.save()
+            self._squash(cr, y - lift + pixbuf.get_height())
             Gdk.cairo_set_source_pixbuf(cr, pixbuf, x, y - lift)
+            if self._squashed:
+                cr.get_source().set_filter(cairo.Filter.NEAREST)  # keep the pixel art crisp
             cr.paint_with_alpha(alpha)
+            cr.restore()
             self._art_top = max(0, int(y - lift))
-            self._art_bottom = max(self.box_height if self.show_bar else 0, int(y - lift + pixbuf.get_height()))
+            self._art_bottom = max(
+                self.box_height if self.show_bar else 0, int(y - lift + pixbuf.get_height())
+            )
             self._update_shape(pixbuf, x, y, behaviour)
-        else:
+        elif self._active() is None:
+            cr.save()
+            self._squash(cr, self.size - 4 * self.scale - lift)
             self._draw_egg(cr, lift, alpha)
-            scale = self.size / NOMINAL
-            self._art_top = max(0, int(self.size - (58 * scale) - lift))
+            self._draw_particles(cr)
+            cr.restore()
+            self._art_top = max(0, int(self.size - (58 * self.scale) - lift))
             self._art_bottom = self.box_height
             self._clear_shape()
+        else:
+            # A Pokemon whose sprite has not arrived: nothing, rather than an egg or the
+            # previous species. The whole box stays clickable meanwhile.
+            self._clear_shape()
         return False
+
+    def _squash(self, cr, ground_y: float) -> None:
+        """The agent bob's squashed half, about the ground line so the feet stay put."""
+        if not self._squashed:
+            return
+        centre = self.size / 2
+        cr.translate(centre, ground_y)
+        cr.scale(*BOB_SCALE)
+        cr.translate(-centre, -ground_y)
+
+    def _draw_particles(self, cr) -> None:
+        now = time.monotonic()
+        for particle in self.burst.particles:
+            age = now - particle.born
+            if age >= PARTICLE_LIFETIME:
+                continue
+            frame = particle_frame(self.size, particle.x_fraction, age)
+            if frame.opacity <= 0:
+                continue
+            layout = self._prayer_layout(frame.edge)
+            width, height = layout.get_pixel_size()
+            x, y = frame.cx - width / 2, frame.cy - height / 2
+            cr.save()
+            # A colour emoji ignores the source alpha, so fade it through a group,
+            # clipped to the glyph to keep the group small.
+            cr.rectangle(x, y, width, height)
+            cr.clip()
+            cr.push_group()
+            cr.move_to(x, y)
+            PangoCairo.show_layout(cr, layout)
+            cr.pop_group_to_source()
+            cr.paint_with_alpha(frame.opacity)
+            cr.restore()
+
+    def _prayer_layout(self, edge: float) -> Pango.Layout:
+        if self._particle_layout is None or self._particle_layout[0] != edge:
+            layout = self.area.create_pango_layout(PARTICLE_GLYPH)
+            font = Pango.FontDescription("Sans")
+            font.set_absolute_size(edge * 0.8 * Pango.SCALE)
+            layout.set_font_description(font)
+            self._particle_layout = (edge, layout)
+        return self._particle_layout[1]
 
     def _bar_rect(self) -> tuple[int, int, int, int]:
         """Whole-pixel bounds, so the cached surface can be blitted without resampling."""
@@ -655,8 +1171,13 @@ class PetWindow(Gtk.Window):
         cr.save()
         base_x, base_y = self.size / 2, self.size - 4 * scale
         cr.translate(base_x, base_y - lift)
-        cr.rotate(self._egg_rotation)
+        cr.rotate(self._egg_rotation)  # the idle rock, about the base
         rx, ry = 21 * scale, 27 * scale
+        if self._egg_wobble:
+            # A prayer's shake turns about the egg's centre, on top of the rock.
+            cr.translate(0, -ry)
+            cr.rotate(self._egg_wobble)
+            cr.translate(0, ry)
         cr.save()
         cr.translate(0, -ry)
         cr.scale(rx, ry)
@@ -731,12 +1252,18 @@ class PetWindow(Gtk.Window):
             delay = self.sprite.delay_ms()
             self._next_frame_at = now + (delay / 1000.0 if delay > 0 else 0.1)
 
+        egg = self.sprite is None and self._active() is None
         self._lift_px = self._offsets(behaviour)
-        self._egg_rotation = self._egg_angle() if self.sprite is None else 0.0
+        self._egg_rotation = self._egg_angle() if egg else 0.0
+        self._egg_wobble = math.radians(self.burst.wobble(now)) if egg else 0.0
         key = (
             self._lift_px,
             self._frame_serial,
             self._egg_rotation,
+            self._egg_wobble,
+            self._squashed,
+            # Particles move every frame while they fly.
+            round(now * 1000 / FAST_TICK_MS) if self.burst.particles else None,
             behaviour.alpha,
             behaviour.glow,
             self.error is not None,
@@ -750,6 +1277,7 @@ class PetWindow(Gtk.Window):
     # ------------------------------------------------------------------ interaction
 
     def _on_press(self, _w, event) -> bool:
+        self.petting.reset()
         if event.button == 3:
             self._menu().popup_at_pointer(event)
             return True
@@ -759,37 +1287,50 @@ class PetWindow(Gtk.Window):
         return True
 
     def _on_motion(self, _w, event) -> bool:
-        if self._press is None or self._dragging:
+        if self._press is None:
+            # Stroking: plain pointer moves over the pet, no button held.
+            if not event.state & Gdk.ModifierType.BUTTON1_MASK:
+                stroke = min_stroke(self.size)
+                if self.petting.feed(event.x_root, event.time / 1000, stroke):
+                    self._pet_stroked()
+            return False
+        if self._dragging:
             return False
         px, py, _ = self._press
         if math.hypot(event.x_root - px, event.y_root - py) > DRAG_THRESHOLD:
             self._dragging = True
+            self.petting.reset()
             self.bubble.hide()
             self._cancel_hover()
             # Hand the move to the window manager: smoother than tracking motion, and
-            # it cooperates with Cinnamon's edge snapping.
+            # it cooperates with Cinnamon's edge snapping. The WM keeps the release, so
+            # forget the press now or the next stroke would still look like a drag.
             self.begin_move_drag(1, int(event.x_root), int(event.y_root), event.time)
+            self._press = None
         return True
 
     def _on_release(self, _w, event) -> bool:
         if event.button == 1 and self._press is not None and not self._dragging:
-            self._open_ui()
+            self._acknowledge_agents()
+            self.router.handle(self._is_egg())
         self._press = None
         return True
 
     def _on_enter(self, _w, _event) -> bool:
+        self._hovering = True
         self._cancel_hover()
         self._hover_source = GLib.timeout_add(HOVER_DELAY_MS, self._show_hover)
         return False
 
     def _on_leave(self, _w, _event) -> bool:
-        self._cancel_hover()
-        self.bubble.hide()
+        self._hovering = False
+        self.petting.reset()
+        self._hide_callout()
         return False
 
     def _show_hover(self) -> bool:
         self._hover_source = None
-        self._show_bubble(self._hover_markup(), timeout_ms=None)
+        self._show_callout()
         return False
 
     def _cancel_hover(self) -> None:
@@ -802,8 +1343,18 @@ class PetWindow(Gtk.Window):
         return False
 
     def _on_configure(self, _w, _event) -> bool:
+        self._follow_overlays()
         if not self._placed:
             return False  # still settling into the saved position
+        # The run's own frames must never become home; a user drag always does, and
+        # cancels a run or return in progress.
+        phase, persist = resolve_move(self.run_phase, self._dragging)
+        if phase != self.run_phase:
+            self.run_phase = phase
+            self._stop_run()
+        if not persist:
+            return False
+        self._pending_save = self.get_position()
         # Debounced: a WM-driven drag emits a configure event per pixel.
         if self._save_source is not None:
             GLib.source_remove(self._save_source)
@@ -812,8 +1363,10 @@ class PetWindow(Gtk.Window):
 
     def _save_position(self) -> bool:
         self._save_source = None
-        x, y = self.get_position()
-        self.config.set(x=x, y=y)
+        if self._pending_save is not None:
+            x, y = self._pending_save
+            self.config.set(x=x, y=y)
+            self._pending_save = None
         return False
 
     # ------------------------------------------------------------------- the menu
@@ -833,7 +1386,7 @@ class PetWindow(Gtk.Window):
             entry.connect("toggled", handler)
             menu.append(entry)
 
-        item("Open PokeTokenBar", lambda *_: self._open_ui())
+        item("Open PokeTokenBar", lambda *_: self._open_from_menu())
         item("Refresh now", lambda *_: self.client.refresh_now())
         menu.append(Gtk.SeparatorMenuItem())
 
@@ -849,15 +1402,23 @@ class PetWindow(Gtk.Window):
         size_item.set_submenu(sizes)
         menu.append(size_item)
 
+        meta = (self.state or {}).get("meta", {})
         check("Always on top", bool(self.config.get("keep_above", True)), self._on_keep_above)
         check("Animated sprite", bool(self.config.get("animated", True)), self._on_animated)
         check("Progress bar", self.show_bar, self._on_show_bar)
+        check("React to agent activity", self._agent_enabled(), self._on_agent_activity)
+        check("Show back view", bool(meta.get("always_faces_back")), self._on_back_view)
         check("Start with session", autostart_file().exists(), self._on_autostart)
         menu.append(Gtk.SeparatorMenuItem())
         item("Quit", lambda *_: self.quit())
 
         menu.show_all()
         return menu
+
+    def _open_from_menu(self) -> None:
+        """Open always opens, even over an egg; it still answers waiting agents."""
+        self._acknowledge_agents()
+        self._open_ui()
 
     def _on_size_chosen(self, entry: Gtk.RadioMenuItem, size: int) -> None:
         if not entry.get_active() or size == self.size:
@@ -885,7 +1446,20 @@ class PetWindow(Gtk.Window):
         self.config.set(animated=entry.get_active())
         self._sprite_key = None
         if self.state is not None:
-            self._sync_sprite(self.state)
+            self._sync_sprite(self.state.get("companion", {}))
+        self._on_motion_changed()  # a static pet does not bob or run either
+
+    def _on_agent_activity(self, entry: Gtk.CheckMenuItem) -> None:
+        self.config.set(agent_activity=entry.get_active())
+        if not entry.get_active():
+            self._reset_agent()
+
+    def _on_back_view(self, entry: Gtk.CheckMenuItem) -> None:
+        self.client.post_json(
+            "/api/settings/back-view",
+            {"enabled": entry.get_active()},
+            lambda _result: self.client.poll_now(),
+        )
 
     def _on_autostart(self, entry: Gtk.CheckMenuItem) -> None:
         path = autostart_file()

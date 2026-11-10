@@ -94,6 +94,7 @@ const STATUS_LINES: Record<string, string> = {
   working: "Today's work is piling up.",
   focus: "Deep in the zone right now.",
   tired: "Worn out — the limit is nearly full.",
+  sulk: "Sulking with its back turned.",
   sleep: "Fast asleep. No tokens today yet.",
   levelUp: "Something just happened!",
 };

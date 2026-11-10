@@ -17,6 +17,7 @@ export function Sprite({
   alt = "",
   className = "",
   form = null,
+  back = false,
 }: {
   speciesId: number;
   shiny?: boolean;
@@ -26,11 +27,13 @@ export function Sprite({
   className?: string;
   /** The individual's form; species without it show their default. */
   form?: string | null;
+  /** Seen from behind. */
+  back?: boolean;
 }) {
   const [failed, setFailed] = useState(false);
   const [fellBack, setFellBack] = useState(false);
   const [attempt, setAttempt] = useState(0);
-  const key = `${speciesId}-${shiny}-${animated}-${form ?? ""}`;
+  const key = `${speciesId}-${shiny}-${animated}-${form ?? ""}-${back}`;
   const [seenKey, setSeenKey] = useState(key);
   if (seenKey !== key) {
     // A different image: forget the previous one's failures.
@@ -40,7 +43,7 @@ export function Sprite({
     setAttempt(0);
   }
 
-  const preferred = spriteUrl(speciesId, { animated, shiny, form });
+  const preferred = spriteUrl(speciesId, { animated, shiny, form, back });
   const degraded = failed || fellBack;
   useEffect(() => {
     if (!degraded) return;
@@ -81,7 +84,7 @@ export function Sprite({
       className={`sprite ${className}`}
       style={{ width: size, height: size }}
       // Animated Gen-V art only exists up to #649; fall back to the static PNG.
-      src={spriteUrl(speciesId, { animated: animated && !fellBack, shiny, form })}
+      src={spriteUrl(speciesId, { animated: animated && !fellBack, shiny, form, back })}
       alt={alt}
       loading="lazy"
       draggable={false}

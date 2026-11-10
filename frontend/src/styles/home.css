@@ -7,6 +7,14 @@
   --pace-yellow: #ffd60a;
   --pace-orange: var(--warn);
   --pace-red: var(--crit);
+  --streak-lit: #ff9f0a;
+  /* GitHub's contribution greens. In the dark scale brighter means more, so level 1
+     never melts into the background; no level borrows a provider's accent. */
+  --heat-0: #161b22;
+  --heat-1: #0e4429;
+  --heat-2: #006d32;
+  --heat-3: #26a641;
+  --heat-4: #39d353;
 }
 
 @media (prefers-color-scheme: light) {
@@ -14,6 +22,12 @@
     --pace-blue: #007aff;
     --pace-teal: #30b0c7;
     --pace-yellow: #ffcc00;
+    --streak-lit: #ff9500;
+    --heat-0: #ebedf0;
+    --heat-1: #9be9a8;
+    --heat-2: #40c463;
+    --heat-3: #30a14e;
+    --heat-4: #216e39;
   }
 }
 
@@ -68,15 +82,40 @@
 
 .rangeRow__item.home__monthItem {
   position: relative;
-  padding-right: 100px;
+  padding-right: 150px;
 }
 
-/* A labelled capsule, so the only way into the recaps reads as a button. */
-.home__recapBtn {
+.home__monthActions {
   position: absolute;
   top: 50%;
   right: 8px;
   transform: translateY(-50%);
+  display: inline-flex;
+  align-items: center;
+  gap: 14px;
+}
+
+/* Consecutive days with usage. Gray while today has none yet: the run still holds. */
+.home__streak {
+  display: inline-flex;
+  align-items: center;
+  gap: 2px;
+  font-size: 12px;
+  font-weight: 550;
+  color: var(--text-dim);
+  font-variant-numeric: tabular-nums;
+}
+
+.home__streak svg {
+  color: var(--text-dim);
+}
+
+.home__streak.is-lit svg {
+  color: var(--streak-lit);
+}
+
+/* A labelled capsule, so the only way into the recaps reads as a button. */
+.home__recapBtn {
   display: inline-flex;
   align-items: center;
   gap: 4px;
@@ -95,7 +134,7 @@
 /* Too narrow for the label: keep the icon, the tooltip and the accessible name. */
 @media (max-width: 620px) {
   .rangeRow__item.home__monthItem {
-    padding-right: 44px;
+    padding-right: 90px;
   }
 
   .home__recapBtn {
@@ -197,8 +236,13 @@
   font-variant-numeric: tabular-nums;
 }
 
-.trend__peak {
+.trend__end {
+  display: inline-flex;
+  align-items: baseline;
   margin-left: auto;
+}
+
+.trend__peak {
   font-size: 11px;
   color: var(--text-faint);
 }
@@ -273,6 +317,99 @@
 .trend__axis--today {
   color: var(--accent);
   font-weight: 600;
+}
+
+/* ---------------------------------------------------------------- activity row */
+
+.activity {
+  cursor: pointer;
+}
+
+/* The period picker reads as the caption's title, not as a form control. */
+.trend__window {
+  padding: 0 2px;
+  border: 0;
+  border-radius: 4px;
+  background: transparent;
+  color: var(--text-faint);
+  font: inherit;
+  font-size: 12px;
+  cursor: pointer;
+}
+
+.trend__window:hover,
+.trend__window:focus-visible {
+  color: var(--text-dim);
+  background: var(--panel-2);
+}
+
+.trend__window option {
+  color: var(--text);
+  background: var(--panel);
+}
+
+.activity__dots {
+  display: inline-flex;
+  align-items: center;
+  align-self: center;
+  gap: 3px;
+  margin-left: 8px;
+  padding: 4px 0;
+  border: 0;
+  background: none;
+  cursor: pointer;
+}
+
+.activity__dot {
+  width: 4px;
+  height: 4px;
+  border-radius: 50%;
+  background: var(--text-dim);
+  opacity: 0.25;
+}
+
+.activity__dot.is-current {
+  opacity: 0.75;
+}
+
+.heat {
+  display: grid;
+  grid-template-columns: auto repeat(16, 1fr);
+  grid-template-rows: repeat(7, 14px);
+  grid-auto-flow: column;
+  gap: 2px;
+  margin-top: 4px;
+}
+
+.heat__label {
+  padding-right: 2px;
+  font-size: 8px;
+  line-height: 14px;
+  color: var(--text-faint);
+}
+
+.heat__cell {
+  border-radius: 2px;
+}
+
+.heat__cell--l0 {
+  background: var(--heat-0);
+}
+.heat__cell--l1 {
+  background: var(--heat-1);
+}
+.heat__cell--l2 {
+  background: var(--heat-2);
+}
+.heat__cell--l3 {
+  background: var(--heat-3);
+}
+.heat__cell--l4 {
+  background: var(--heat-4);
+}
+
+.heat__cell--today {
+  box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--text) 55%, transparent);
 }
 
 /* ---------------------------------------------------------------- limits */

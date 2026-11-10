@@ -321,6 +321,56 @@ def test_a_forked_replay_keeps_the_original_time():
         assert kept[0].local_day == "2026-09-10"
 
 
+def test_scan_start_reaches_the_21_day_trend_window():
+    # From the 21st on, the 1st is the earlier bound; before that, today - 20.
+    late = enrichment_scan_start(datetime(2026, 7, 28, 12, tzinfo=UTC), TZ)
+    assert late == datetime(2026, 7, 1, tzinfo=TZ)
+    early = enrichment_scan_start(datetime(2026, 7, 20, 12, tzinfo=UTC), TZ)
+    assert early == datetime(2026, 6, 30, tzinfo=TZ)
+
+
+def test_rolling_series_has_21_dense_days_ending_today(tmp_path):
+    root = tmp_path / "projects" / "p"
+    root.mkdir(parents=True)
+    now = datetime(2026, 10, 15, 12, tzinfo=UTC)
+    _write_session(
+        root,
+        "a.jsonl",
+        [
+            _line("old", "r0", "2026-09-24T12:00:00Z", out=999),
+            _line("first", "r1", "2026-09-25T12:00:00Z", out=90),
+            _line("m1", "r2", "2026-10-14T12:00:00Z", out=140),
+            _line("m2", "r3", "2026-10-15T08:00:00Z", out=270),
+        ],
+    )
+    snap = UsageService([tmp_path / "projects"], TZ).snapshot(now=now)
+    days = [d.date for d in snap.rolling_daily]
+    assert len(days) == 21
+    assert days[0] == "2026-09-25" and days[-1] == "2026-10-15"
+    by_day = {d.date: d.total_tokens for d in snap.rolling_daily}
+    assert by_day["2026-09-25"] == 100, "the day 20 days back is in; the one before is not"
+    assert by_day["2026-10-14"] == 150
+    assert by_day["2026-10-15"] == 280
+    assert by_day["2026-10-01"] == 0
+    assert snap.rolling_daily[-1].cost > 0 and snap.rolling_daily[-1].coverage.estimated
+
+
+def test_rolling_window_keeps_an_early_session_across_dst_fall_back(tmp_path):
+    """Calendar days, not 21 x 86,400 s: the 25-hour 1 Nov must not cut the 12 Oct session."""
+    la = ZoneInfo("America/Los_Angeles")
+    root = tmp_path / "projects" / "p"
+    root.mkdir(parents=True)
+    now = datetime(2026, 11, 1, 23, 59, tzinfo=la)
+    assert enrichment_scan_start(now, la) == datetime(2026, 10, 12, tzinfo=la)
+    _write_session(
+        root, "a.jsonl", [_line("early", "r1", "2026-10-12T07:30:00Z", out=113)]
+    )  # 00:30 PDT
+    snap = UsageService([tmp_path / "projects"], la).snapshot(now=now)
+    assert snap.rolling_daily[0].date == "2026-10-12"
+    assert snap.rolling_daily[0].total_tokens == 123
+    assert snap.rolling_daily[-1].date == "2026-11-01"
+
+
 def test_month_series_is_dense_and_sums_to_the_month(tmp_path):
     root = tmp_path / "projects" / "p"
     root.mkdir(parents=True)
@@ -359,7 +409,7 @@ def test_recent_days_reach_back_past_the_month_start(tmp_path):
     recent = dict(snap.recent_daily)
     assert recent["2026-09-30"] == 710
     assert recent["2026-10-01"] == 110
-    assert min(recent) == "2026-09-28", "from the start of the week"
+    assert min(recent) == "2026-09-11", "from the start of the 21-day trend window"
 
 
 def test_an_idle_day_keeps_the_week_and_month_history(tmp_path):
@@ -496,3 +546,85 @@ def test_a_truncated_or_rewritten_session_is_read_again_from_the_start(tmp_path)
     assert path.stat().st_size == before.st_size
     os.utime(path, ns=(before.st_atime_ns, before.st_mtime_ns + 1_000_000_000))
     assert svc.snapshot(now=INCR_NOW).today.output == 8
+
+
+UNPRICED = "claude-future-unpriced-model"
+
+
+def test_a_tail_without_a_ledger_keeps_the_earlier_ledger(tmp_path):
+    root = _session_root(tmp_path)
+    path = _write_session(
+        root, "a.jsonl", [_line("a", "r-a", INCR_TS, model=UNPRICED), _cost_state({UNPRICED: 4})]
+    )
+    svc = UsageService([tmp_path / "projects"], TZ)
+    assert svc.snapshot(now=INCR_NOW).today.cost == pytest.approx(4)
+
+    _append(path, _line("b", "r-b", INCR_TS, model=UNPRICED) + "\n")
+    grown = svc.snapshot(now=INCR_NOW)
+    # The ledger is cumulative for the session, so it now spreads over both turns.
+    assert grown.today.total_tokens == 2 * 110
+    assert grown.today.cost == pytest.approx(4)
+    assert grown.today.coverage.reported and not grown.today.coverage.unknown
+
+
+def test_a_truncation_drops_the_cached_ledger(tmp_path):
+    root = _session_root(tmp_path)
+    _write_session(
+        root,
+        "a.jsonl",
+        [
+            _line("a", "r-a", INCR_TS, model=UNPRICED),
+            _line("b", "r-b", INCR_TS, model=UNPRICED),
+            _cost_state({UNPRICED: 9}),
+        ],
+    )
+    svc = UsageService([tmp_path / "projects"], TZ)
+    assert svc.snapshot(now=INCR_NOW).today.cost == pytest.approx(9)
+
+    _write_session(root, "a.jsonl", [_line("a", "r-a", INCR_TS, model=UNPRICED)])
+    shrunk = svc.snapshot(now=INCR_NOW).today
+    assert shrunk.cost == 0
+    assert shrunk.coverage.unknown and not shrunk.coverage.reported
+
+
+def test_a_half_written_ledger_is_applied_once_it_is_complete(tmp_path):
+    root = _session_root(tmp_path)
+    path = root / "a.jsonl"
+    ledger = _cost_state({UNPRICED: 9})
+    path.write_text(_line("a", "r-a", INCR_TS, model=UNPRICED) + "\n" + ledger[:20])
+    svc = UsageService([tmp_path / "projects"], TZ)
+    pending = svc.snapshot(now=INCR_NOW).today
+    assert pending.cost == 0 and pending.coverage.unknown
+
+    _append(path, ledger[20:] + "\n")
+    done = svc.snapshot(now=INCR_NOW).today
+    assert done.cost == pytest.approx(9)
+    assert done.total_tokens == 110
+
+
+def test_a_file_with_no_complete_line_is_read_afresh_when_replaced(tmp_path):
+    """Nothing was consumed yet, so the earlier parse has no claim on the new bytes."""
+    root = _session_root(tmp_path)
+    path = root / "a.jsonl"
+    path.write_text(_line("a", "r-a", INCR_TS, out=1_000))
+    svc = UsageService([tmp_path / "projects"], TZ)
+    assert svc.snapshot(now=INCR_NOW).today.output == 1_000
+
+    path.write_text(_line("b", "r-b", INCR_TS, out=7_000) + "\n")
+    assert svc.snapshot(now=INCR_NOW).today.output == 7_000
+
+
+def test_the_newest_turn_with_tokens_is_the_last_usage(tmp_path):
+    root = _session_root(tmp_path)
+    _write_session(
+        root,
+        "a.jsonl",
+        [
+            _line("m1", "r1", "2026-09-09T08:00:00Z"),
+            _line("m2", "r2", "2026-09-10T09:30:00Z"),
+            _line("m3", "r3", "2026-09-10T10:00:00Z", out=0, inp=0),
+        ],
+    )
+    snap = UsageService([tmp_path / "projects"], TZ).snapshot(now=INCR_NOW)
+    assert snap.last_usage == datetime(2026, 9, 10, 9, 30, tzinfo=UTC)
+    assert UsageService([tmp_path / "none"], TZ).snapshot(now=INCR_NOW).last_usage is None

@@ -15,7 +15,7 @@ from .test_game_rules import slowpoke
 
 
 def settings(tmp_path: Path, **kw) -> Settings:
-    (tmp_path / "claude" / "projects").mkdir(parents=True)
+    (tmp_path / "claude" / "projects").mkdir(parents=True, exist_ok=True)
     return Settings(
         data_dir=tmp_path / "data",
         claude_roots=[tmp_path / "claude" / "projects"],
@@ -305,3 +305,85 @@ def test_shop_items_report_how_many_can_be_bought_at_once(rt):
     rt.store.state.used_since_install = 1_200_000_000
     items = {i.kind: i.max_count for i in rt.build_state().shop.items}
     assert items == {"rareCandy": 2, "mint": 12, "shinyCharm": 0}
+
+
+# ------------------------------------------------------------- 2.5.7 views
+
+
+async def test_the_state_carries_the_trend_series_grid_and_streak(rt):
+    await rt.refresh()
+    usage = rt.build_state().usage
+    assert len(usage.rolling_daily) == 21
+    assert usage.rolling_daily[-1].date == usage.today_date
+    assert len(usage.activity.weeks) == 16 and all(len(w) == 7 for w in usage.activity.weeks)
+    assert usage.streak.days == 0
+
+
+async def test_the_grid_and_streak_read_the_ledger_before_the_first_scan(rt):
+    today = datetime.now(rt.settings.timezone).date()
+    rt.store.state.token_ledger = {today.isoformat(): 500}
+    usage = rt.build_state().usage
+    assert usage.streak.days == 1 and usage.streak.includes_today
+    assert usage.activity.peak == 500
+
+
+def test_agent_events_reach_the_state_only_when_asked_for(rt):
+    rt.agent.post("waiting", "api", "Allow edit?")
+    plain = rt.build_state().agent
+    assert plain.latest_seq == 1 and plain.events == []
+    asked = rt.build_state(agent_after=0).agent
+    assert [(e.state, e.label, e.message) for e in asked.events] == [
+        ("waiting", "api", "Allow edit?")
+    ]
+    assert rt.build_state(agent_after=1).agent.events == []
+
+
+def test_display_preferences_round_trip_and_unknown_values_reset(tmp_path):
+    first = AppRuntime(settings(tmp_path))
+    prefs = first.prefs.prefs
+    prefs.daily_trend_window = "7d"
+    prefs.activity_view = "recentHeatmap"
+    prefs.growth_in_title = True
+    prefs.always_faces_back = True
+    first.prefs.save()
+    meta = AppRuntime(settings(tmp_path)).build_state().meta
+    assert (meta.daily_trend_window, meta.activity_view) == ("7d", "recentHeatmap")
+    assert meta.growth_in_title and meta.always_faces_back
+
+    path = first.settings.preferences_file
+    path.write_text('{"daily_trend_window": "3d", "activity_view": "pie"}')
+    meta = AppRuntime(settings(tmp_path)).build_state().meta
+    assert (meta.daily_trend_window, meta.activity_view) == ("14d", "monthlyBars")
+
+
+async def test_growth_prayers_and_back_view_reach_the_companion_view(rt):
+    rt.store.state.egg_usage = 1_450_000
+    rt.companion.pray()
+    view = rt.build_state().companion
+    assert (view.growth.kind, view.growth.percent) == ("hatch", 29)
+    assert view.egg.prayers == 1
+    assert not view.faces_back, "an egg has no back to show"
+
+    await rt.refresh()
+    rt.store.state.egg_usage = B.EGG_HATCH_THRESHOLD
+    await rt.companion._hatch()
+    rt.prefs.prefs.always_faces_back = True
+    view = rt.build_state().companion
+    assert view.faces_back and view.growth.kind == "growth"
+    assert [e.kind for e in view.events] == ["hatch"]
+    rt.poke.details[1] = slowpoke()
+    detail = await rt.pokemon_detail(rt.store.state.active.current_id)
+    assert detail.individuals[0].prayers == 1
+
+
+def test_region_progress_agrees_with_the_pokedex_cells(rt):
+    state = rt.store.state
+    state.dex.append(DexEntry(id="a", base_id=1, final_id=3, chain_order=[1, 2, 3]))
+    state.dex.append(DexEntry(id="b", base_id=152, final_id=153, chain_order=[152, 153],
+                              is_shiny=True))
+    collection = rt.build_state().collection
+    for r in collection.dex_progress.regions:
+        cells = [s for s in collection.pokedex if r.first <= s.species_id <= r.last]
+        assert r.owned == len(cells)
+        assert r.shiny_owned == sum(1 for s in cells if s.is_shiny)
+    assert collection.dex_progress.badges == []

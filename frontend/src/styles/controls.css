@@ -189,6 +189,34 @@
   color: var(--text-dim);
 }
 
+.toggleRow {
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+  margin-top: 14px;
+  cursor: pointer;
+}
+
+.toggleRow input {
+  margin: 2px 0 0;
+  accent-color: var(--accent);
+}
+
+.toggleRow__text {
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+}
+
+.toggleRow__label {
+  font-size: 13px;
+}
+
+.toggleRow__hint {
+  font-size: 12px;
+  color: var(--text-faint);
+}
+
 /* ---------------------------------------------------------------- snapshots */
 
 .snapshots {

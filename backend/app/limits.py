@@ -137,7 +137,15 @@ def account_display(email: str | None, org: str | None) -> str | None:
     return f"{email} · {org}"
 
 
-def parse_profile(payload: object) -> tuple[str, str | None] | None:
+@dataclass(frozen=True)
+class ProfileIdentity:
+    email: str
+    org: str | None
+    # The server's own name for the plan ("Ultra"); the saved login has none.
+    plan_display_name: str | None = None
+
+
+def parse_profile(payload: object) -> ProfileIdentity | None:
     if not isinstance(payload, dict):
         return None
     account = payload.get("account")
@@ -146,10 +154,14 @@ def parse_profile(payload: object) -> tuple[str, str | None] | None:
         return None
     org = payload.get("organization")
     name = org.get("name") if isinstance(org, dict) else None
-    return email, (name if isinstance(name, str) and name else None)
+    plan = org.get("plan_display_name") if isinstance(org, dict) else None
+    plan = plan.strip() if isinstance(plan, str) else ""
+    return ProfileIdentity(
+        email, name if isinstance(name, str) and name else None, plan or None
+    )
 
 
-def saved_identity(claude_json: Path) -> tuple[str, str | None] | None:
+def saved_identity(claude_json: Path) -> ProfileIdentity | None:
     """The login Claude Code saved in `.claude.json`, used when the profile call fails."""
     try:
         raw = json.loads(claude_json.read_text())
@@ -162,7 +174,7 @@ def saved_identity(claude_json: Path) -> tuple[str, str | None] | None:
     if not isinstance(email, str) or not email:
         return None
     org = account.get("organizationName")
-    return email, (org if isinstance(org, str) and org else None)
+    return ProfileIdentity(email, org if isinstance(org, str) and org else None)
 
 
 def _tier_multiplier(tier: str | None) -> str | None:
@@ -175,12 +187,25 @@ def _tier_multiplier(tier: str | None) -> str | None:
     return None
 
 
-def plan_display(cred: Credential) -> str | None:
+# Max 5x and Max 20x were renamed Max and Ultra; credentials still carry the multiplier.
+MAX_PLAN_NAMES = {"5x": "Max", "20x": "Ultra"}
+
+
+def plan_display(cred: Credential, plan_display_name: str | None = None) -> str | None:
+    """The profile's plan name when it has one, otherwise one derived from the credential."""
+    name = (plan_display_name or "").strip()
+    if name:
+        return name
     if not cred.subscription_type:
         return None
     base = cred.subscription_type[:1].upper() + cred.subscription_type[1:]
     multiplier = _tier_multiplier(cred.rate_limit_tier)
-    return f"{base} {multiplier}" if multiplier else base
+    if multiplier is None:
+        return base
+    if cred.subscription_type.lower() != "max":
+        return f"{base} {multiplier}"
+    # An unknown multiplier keeps its number rather than borrowing a name it may not own.
+    return MAX_PLAN_NAMES.get(multiplier, f"Max {multiplier}")
 
 
 def _window(raw: object, key: str, name: str, kind: str) -> LimitWindow | None:
@@ -244,7 +269,7 @@ class LimitsProvider:
         self.credentials_file = credentials_file
         self.claude_json = claude_json
         self._last_good: Credential | None = None
-        self._profiles: dict[str, tuple[str, str | None]] = {}
+        self._profiles: dict[str, ProfileIdentity] = {}
 
     def _credential(self) -> Credential:
         """Re-read the file every time, so a /login to another account is picked up.
@@ -264,9 +289,7 @@ class LimitsProvider:
             return self._last_good
         return cred
 
-    async def _identity(
-        self, client: httpx.AsyncClient, token: str
-    ) -> tuple[str, str | None] | None:
+    async def _identity(self, client: httpx.AsyncClient, token: str) -> ProfileIdentity | None:
         cached = self._profiles.get(token)
         if cached is not None:
             return cached
@@ -285,7 +308,7 @@ class LimitsProvider:
             self._profiles[token] = identity
         return identity
 
-    def fallback_identity(self) -> tuple[str, str | None] | None:
+    def fallback_identity(self) -> ProfileIdentity | None:
         return saved_identity(self.claude_json) if self.claude_json else None
 
     async def fetch(self, client: httpx.AsyncClient) -> LimitStatus:
@@ -328,7 +351,8 @@ class LimitsProvider:
         # Best effort: a failed lookup only drops the label.
         identity = await self._identity(client, cred.access_token) or self.fallback_identity()
         if identity is not None:
-            status.account_email, status.account_org = identity
+            status.account_email, status.account_org = identity.email, identity.org
+            status.plan = plan_display(cred, identity.plan_display_name)
         return status
 
 

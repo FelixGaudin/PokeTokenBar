@@ -398,7 +398,7 @@ async def test_the_hatch_event_carries_the_real_shiny_odds(tmp_path):
     svc.state.inventory[ItemKind.SHINY_CHARM.value] = 1
     await feed(svc, 1_000)
     await feed(svc, 1_000 + B.EGG_HATCH_THRESHOLD)
-    assert svc.event["odds"] == 48
+    assert svc.event.odds == 48
 
 
 # ---------------------------------------------------------------- profiles

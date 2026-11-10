@@ -1,4 +1,4 @@
-import type { DayPoint } from "../types";
+import type { ActivityViewKind, DayPoint, TrendWindow } from "../types";
 
 export const TRACK_HEIGHT = 26;
 export const BAR_FLOOR = 1.5;
@@ -52,4 +52,80 @@ export function monthColumns(series: DayPoint[], todayKey: string): TrendColumn[
     };
     return { point, isFuture: i + 1 > today };
   });
+}
+
+export const WINDOW_ORDER: TrendWindow[] = ["7d", "14d", "21d", "month"];
+
+export const WINDOW_TITLES: Record<TrendWindow, string> = {
+  "7d": "Last 7 days",
+  "14d": "Last 14 days",
+  "21d": "Last 21 days",
+  month: "This month",
+};
+
+const WINDOW_DAYS: Record<Exclude<TrendWindow, "month">, number> = { "7d": 7, "14d": 14, "21d": 21 };
+
+/**
+ * The selected window's columns: the calendar month (future days hold their place), or
+ * the last N days of the server's dense 21-day series, none of them in the future.
+ */
+export function trendColumns(
+  window: TrendWindow,
+  monthDaily: DayPoint[],
+  rollingDaily: DayPoint[],
+  todayKey: string,
+): TrendColumn[] {
+  if (window === "month") return monthColumns(monthDaily, todayKey);
+  return rollingDaily.slice(-WINDOW_DAYS[window]).map((point) => ({ point, isFuture: false }));
+}
+
+/** Whole calendar days from one "YYYY-MM-DD" to another, positive when `to` is later. */
+export function dayDifference(fromKey: string, toKey: string): number {
+  const utc = (key: string) => {
+    const [y, m, d] = key.split("-").map(Number);
+    return Date.UTC(y, (m ?? 1) - 1, d ?? 1);
+  };
+  return Math.round((utc(toKey) - utc(fromKey)) / 86_400_000);
+}
+
+/**
+ * Axis label for a column. Today is always labelled. The month window keeps day 1 and
+ * the weekly marks; rolling windows label the 1st of a month and the weekly marks back
+ * from today (the midpoint in 7 days), dropping a mark that would crowd a nearby 1st.
+ */
+export function axisLabelFor(
+  window: TrendWindow,
+  dateKey: string,
+  todayKey: string,
+  minSep = 3,
+): string | null {
+  const date = localDate(dateKey);
+  const dom = date.getDate();
+  if (dateKey === todayKey) return String(dom);
+  if (window === "month") return axisLabel(dom, localDate(todayKey).getDate());
+
+  const diff = dayDifference(dateKey, todayKey);
+  if (diff <= 0) return null;
+  if (window === "7d") {
+    if (dom === 1) {
+      return diff >= minSep && (diff === 3 || Math.abs(diff - 3) >= minSep) ? "1" : null;
+    }
+    return diff === 3 ? String(dom) : null;
+  }
+  if (dom === 1) return diff >= minSep ? "1" : null;
+  if (diff % 7 !== 0 || diff < minSep) return null;
+  // This month's 1st, in the window and clear of today, is the better landmark.
+  if (diff - (dom - 1) >= minSep && dom - 1 < minSep) return null;
+  // So is next month's 1st, when the mark sits on the last days of its month.
+  const daysInMonth = new Date(date.getFullYear(), date.getMonth() + 1, 0).getDate();
+  const toNextFirst = daysInMonth - dom + 1;
+  if (diff - toNextFirst >= minSep && toNextFirst < minSep) return null;
+  return String(dom);
+}
+
+export const ACTIVITY_VIEWS: ActivityViewKind[] = ["monthlyBars", "recentHeatmap"];
+
+/** The next view in the cycle, wrapping around. */
+export function nextView(view: ActivityViewKind): ActivityViewKind {
+  return ACTIVITY_VIEWS[(ACTIVITY_VIEWS.indexOf(view) + 1) % ACTIVITY_VIEWS.length];
 }
